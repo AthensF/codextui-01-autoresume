@@ -873,6 +873,33 @@ pub struct QueuedSubmission {
     pub id: String,
     pub input: Vec<UserInput>,
     pub client_user_message_id: String,
+    /// Scheduling state of the queued submission.
+    pub schedule_state: Option<QueuedSubmissionState>,
+    /// Earliest wall-clock time (epoch ms) the submission may be dispatched.
+    pub not_before_ms: Option<i64>,
+    /// Short string describing why the submission is blocked, if any.
+    pub block_reason: Option<String>,
+    /// Number of failed dispatch attempts.
+    pub attempt_count: Option<u32>,
+    /// Bounded error message from the most recent failure.
+    pub last_error: Option<String>,
+}
+
+/// Scheduling state of a queued submission.
+#[derive(
+    Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS, ExperimentalApi,
+)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum QueuedSubmissionState {
+    /// Waiting to be dispatched (possibly with a future `notBeforeMs`).
+    Pending,
+    /// Blocked by a usage limit or other transient condition.
+    Blocked,
+    /// Currently being dispatched by a worker.
+    Leased,
+    /// Completed and acknowledged.
+    Done,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

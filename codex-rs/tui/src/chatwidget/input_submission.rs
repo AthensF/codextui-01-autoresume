@@ -116,7 +116,28 @@ impl ChatWidget {
         if self.has_misalignment_policy_violation() {
             return (false, None);
         }
-        if self.input_queue.rate_limit_recovery_pending {
+        if self.input_queue.rate_limit_recovery_pending || self.usage_limit_wait.is_tree_closed() {
+            // When the tree is closed due to a usage limit (not just rate-limit
+            // recovery), enqueue to the durable queue so the message survives
+            // restarts and is dispatched by the scheduler when availability
+            // returns. Still push to the in-memory queue for display.
+            let durable_queue_command = if self.usage_limit_wait.is_tree_closed()
+                && let Some(thread_id) = self.thread_id
+                && self.is_session_configured()
+            {
+                let client_user_message_id = uuid::Uuid::new_v4().to_string();
+                let items = vec![UserInput::Text {
+                    text: user_message.text.clone(),
+                    text_elements: app_server_text_elements(&user_message.text_elements),
+                }];
+                Some(AppCommand::QueueUserTurn {
+                    thread_id,
+                    client_user_message_id,
+                    items,
+                })
+            } else {
+                None
+            };
             self.input_queue
                 .queued_user_messages
                 .push_back(QueuedUserMessage::from(user_message));
@@ -124,7 +145,7 @@ impl ChatWidget {
                 .queued_user_message_history_records
                 .push_back(history_record);
             self.refresh_pending_input_preview();
-            return (true, None);
+            return (true, durable_queue_command);
         }
         if !self.is_session_configured() {
             tracing::warn!("cannot submit user message before session is configured; queueing");

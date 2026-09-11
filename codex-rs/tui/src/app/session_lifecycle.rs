@@ -729,6 +729,7 @@ impl App {
         if external_writer {
             self.chat_widget.show_external_writer_thread();
         }
+        self.chat_widget.refresh_usage_limit_status();
         Ok(())
     }
 
@@ -873,6 +874,7 @@ impl App {
                 if !recovery_was_pending {
                     self.chat_widget.finish_rate_limit_recovery();
                 }
+                self.chat_widget.refresh_usage_limit_status();
                 self.chat_widget.maybe_send_next_queued_input();
             }
             Err(err) if self.recover_transport_error(&err) => {}

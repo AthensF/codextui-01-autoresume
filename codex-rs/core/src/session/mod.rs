@@ -246,10 +246,13 @@ pub(crate) mod step_settings;
 mod thread_settings;
 pub(crate) mod time_reminder;
 mod token_budget;
+pub(crate) mod tree_suspension;
 pub(crate) mod turn;
 pub(crate) mod turn_context;
+pub(crate) mod turn_execution_progress;
 mod turn_input;
 mod turn_suspension;
+pub(crate) mod usage_limit_recovery;
 mod world_state;
 use self::code_mode_warning::unsupported_code_mode_warning;
 #[cfg(test)]
@@ -273,6 +276,10 @@ use self::turn::realtime_text_for_event;
 use self::turn_context::TurnContext;
 #[cfg(test)]
 mod rollout_reconstruction_tests;
+
+#[cfg(test)]
+#[path = "usage_limit_recovery_tests.rs"]
+mod usage_limit_recovery_tests;
 
 /// Notes from the previous real user turn.
 ///

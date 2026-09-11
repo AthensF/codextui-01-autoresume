@@ -82,3 +82,75 @@ pub struct ThreadStopInput<'a> {
     /// Store scoped to this thread runtime.
     pub thread_store: &'a ExtensionData,
 }
+
+/// One member of a suspended agent tree, excluding the root.
+///
+/// Core populates this from the live agent subtree before emitting
+/// [`TurnSuspendedInput`].  The queue extension converts it to its
+/// internal `SuspendedTreeMember` representation when building the
+/// durable recovery manifest.
+#[derive(Clone, Debug)]
+pub struct SuspendedMemberInfo {
+    /// The member's thread ID.
+    pub thread_id: String,
+    /// The turn ID to resume on this member.
+    pub turn_id: String,
+    /// Parent thread ID in the agent tree.
+    pub parent_thread_id: String,
+    /// Parent turn ID that spawned this member.
+    pub parent_turn_id: String,
+    /// Root turn ID shared by the entire tree.
+    pub root_turn_id: String,
+    /// Agent path from root to this member (e.g. `"root.child"`).
+    pub agent_path: String,
+}
+
+/// Replay-safety classification for a suspended tree.
+///
+/// Core derives this from the `TurnExecutionProgress` of the suspended
+/// turn.  The queue extension converts it to its internal
+/// `ReplaySafetySummary` when building the durable recovery manifest.
+#[derive(Clone, Debug)]
+pub enum SuspendedReplaySafety {
+    /// All tool outputs are flushed to history.  Automatic recovery is safe.
+    Safe {
+        /// Number of completed tool calls verified in history.
+        verified_tool_calls: usize,
+    },
+    /// One or more tool/hook outcomes are ambiguous.  Automatic recovery
+    /// is blocked; the user must manually intervene.
+    AttentionRequired {
+        /// Human-readable description of the ambiguous effects.
+        reason: String,
+    },
+}
+
+/// Input supplied when the host suspends an unfinished turn for durable
+/// usage-limit hand-off.
+///
+/// The queue extension uses this callback to enqueue a
+/// `SuspendedTreeRecoveryManifest` so a replacement process can recover
+/// the suspended turn after the usage-limit reset window elapses.
+pub struct TurnSuspendedInput<'a> {
+    /// The thread whose turn was suspended.
+    pub thread_id: &'a str,
+    /// The turn ID to resume on recovery.
+    pub turn_id: &'a str,
+    /// Epoch-millis deadline after which the recovery job becomes due.
+    ///
+    /// Typically the usage-limit reset time.  A value of zero means
+    /// "due immediately".
+    pub not_before_ms: i64,
+    /// Live member threads to recover after the root, in parent-first
+    /// order.  Excludes the root thread itself.
+    pub members: &'a [SuspendedMemberInfo],
+    /// Coordinator generation at the time of suspension, used to fence
+    /// stale callbacks from the previous process.
+    pub coordinator_generation: u64,
+    /// Replay-safety classification of the suspended tree.
+    pub replay_safety: &'a SuspendedReplaySafety,
+    /// Store scoped to the host session runtime.
+    pub session_store: &'a ExtensionData,
+    /// Store scoped to this thread runtime.
+    pub thread_store: &'a ExtensionData,
+}

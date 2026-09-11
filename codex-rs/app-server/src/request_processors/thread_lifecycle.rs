@@ -1,6 +1,8 @@
 use super::*;
 use crate::extensions::send_thread_warning;
+use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadQueueChangedNotification;
+use codex_app_server_protocol::ThreadUsageLimitUpdatedNotification;
 use codex_extension_api::ThreadIdleCause;
 use codex_protocol::config_types::MultiAgentMode;
 
@@ -279,6 +281,7 @@ pub(super) async fn ensure_listener_task_running(
     } = listener_task_context;
     let outgoing_for_task = Arc::clone(&outgoing);
     tokio::spawn(async move {
+        let mut usage_limit_rx = conversation.usage_limit_subscribe();
         loop {
             tokio::select! {
                 biased;
@@ -365,6 +368,29 @@ pub(super) async fn ensure_listener_task_running(
                     {
                         let _ = completion_tx.send(());
                     }
+                }
+                _ = usage_limit_rx.changed() => {
+                    // The usage-limit coordinator snapshot changed.
+                    // Emit a ThreadUsageLimitUpdated notification to all
+                    // subscribed connections.
+                    let snapshot = usage_limit_rx.borrow_and_update().clone();
+                    let subscribed_connection_ids = thread_state_manager
+                        .subscribed_connection_ids(conversation_id)
+                        .await;
+                    let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
+                        outgoing_for_task.clone(),
+                        subscribed_connection_ids,
+                        conversation_id,
+                    );
+                    let notification = ServerNotification::ThreadUsageLimitUpdated(
+                        ThreadUsageLimitUpdatedNotification {
+                            thread_id: conversation_id.to_string(),
+                            snapshot: snapshot.map(
+                                crate::request_processors::usage_limit_processor::map_snapshot,
+                            ),
+                        },
+                    );
+                    thread_outgoing.send_server_notification(notification).await;
                 }
                 unloading_watchers_open = unloading_state.wait_for_unloading_trigger() => {
                     if !unloading_watchers_open {

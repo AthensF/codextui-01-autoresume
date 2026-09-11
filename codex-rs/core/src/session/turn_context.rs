@@ -1,6 +1,7 @@
 use super::step_settings::ResolvedStepSettings;
 use super::token_budget::has_explicit_settings;
 use super::token_budget::resolve_token_budget;
+use super::turn_execution_progress::TurnExecutionProgress;
 use super::*;
 use crate::config::TokenBudgetConfig;
 use crate::environment_selection::EnvironmentConfigOrigin;
@@ -331,6 +332,8 @@ pub struct TurnContext {
     pub(crate) model_verification_emitted: AtomicBool,
     /// Effective cyber treatment for this turn, including any child-agent inheritance.
     pub(crate) cyber_access_program: Option<CyberAccessProgram>,
+    /// Monotonic execution-progress tracker for safe usage-limit suspension.
+    pub(crate) execution_progress: Arc<TurnExecutionProgress>,
 }
 
 enum TurnMultiAgentRuntime {
@@ -638,6 +641,7 @@ impl TurnContext {
                 self.model_verification_emitted.load(Ordering::Relaxed),
             ),
             cyber_access_program: self.cyber_access_program,
+            execution_progress: Arc::clone(&self.execution_progress),
         }
     }
 
@@ -906,6 +910,7 @@ impl Session {
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),
             cyber_access_program: None,
+            execution_progress: Arc::new(TurnExecutionProgress::new()),
         }
     }
 

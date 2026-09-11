@@ -26,6 +26,7 @@ use crate::thread_manager::default_thread_id_generator;
 use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
 use crate::turn_timing::now_unix_timestamp_ms;
 use arc_swap::ArcSwapOption;
+use codex_config::types::UsageLimitsConfig;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
@@ -57,6 +58,7 @@ use codex_protocol::turn_input::CyberAccessProgram;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::ReadThreadParams;
+use codex_usage_limits::UsageLimitCoordinator;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -64,6 +66,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Weak;
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -76,6 +79,8 @@ mod legacy;
 mod residency;
 mod service_tier;
 mod spawn;
+mod tree_barrier;
+mod usage_limits;
 mod user_authorization;
 
 const MAX_ENVIRONMENT_SUBAGENTS: usize = 8;
@@ -135,6 +140,11 @@ pub(crate) struct AgentControl {
     rollout_budget: Arc<RolloutBudget>,
     /// The user-selected root routing tier, shared by the entire agent tree.
     root_service_tier: Arc<ArcSwapOption<String>>,
+    /// Tree-wide usage-limit wait coordinator, shared by the entire agent tree.
+    usage_limit_coordinator: Arc<UsageLimitCoordinator>,
+    /// Tree admission barrier, sealed when any agent encounters a waitable
+    /// usage limit. Blocks new spawns and turn triggers while sealed.
+    tree_barrier: Arc<tree_barrier::TreeAdmissionBarrier>,
 }
 
 impl Default for AgentControl {
@@ -143,6 +153,7 @@ impl Default for AgentControl {
             Weak::default(),
             default_thread_id_generator(),
             /*rollout_budget*/ None,
+            /*usage_limits*/ None,
         )
     }
 }
@@ -153,7 +164,12 @@ impl AgentControl {
         manager: Weak<ThreadManagerState>,
         thread_id_generator: ThreadIdGenerator,
         rollout_budget: Option<RolloutBudgetConfig>,
+        usage_limits: Option<&UsageLimitsConfig>,
     ) -> Self {
+        let usage_limit_coordinator = match usage_limits {
+            Some(config) => self::usage_limits::coordinator_from_config(config),
+            None => self::usage_limits::default_coordinator(),
+        };
         let control = Self {
             session_id: SessionId::default(),
             manager,
@@ -163,6 +179,8 @@ impl AgentControl {
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),
+            usage_limit_coordinator,
+            tree_barrier: tree_barrier::TreeAdmissionBarrier::new(),
         };
         if let Some(rollout_budget) = rollout_budget {
             control.rollout_budget.configure(rollout_budget);
@@ -188,6 +206,42 @@ impl AgentControl {
         self.rollout_budget.as_ref()
     }
 
+    /// Returns the tree-wide usage-limit wait coordinator.
+    pub(crate) fn usage_limit_coordinator(&self) -> &Arc<UsageLimitCoordinator> {
+        &self.usage_limit_coordinator
+    }
+
+    /// Returns the tree admission barrier, shared by the entire agent tree.
+    pub(crate) fn tree_barrier(&self) -> &Arc<tree_barrier::TreeAdmissionBarrier> {
+        &self.tree_barrier
+    }
+
+    /// Called at each model-request boundary to check whether the tree
+    /// admission barrier is sealed. If sealed, the agent registers as
+    /// parked with the coordinator (so the coordinator knows all expected
+    /// participants are ready) and waits for the barrier to reopen.
+    ///
+    /// If the barrier is not sealed, this returns immediately.
+    pub(crate) async fn park_at_model_boundary(
+        &self,
+        thread_id: ThreadId,
+        cancellation: CancellationToken,
+    ) {
+        if !self.tree_barrier.is_sealed() {
+            return;
+        }
+        // Register as parked for the current generation so the
+        // coordinator can track tree-wide participation.
+        if let Some(snapshot) = self.usage_limit_coordinator.snapshot().await {
+            let _ = self
+                .usage_limit_coordinator
+                .register_parked_agent(snapshot.generation, thread_id.to_string())
+                .await;
+        }
+        // Wait for the barrier to reopen.
+        self.tree_barrier.acquire(cancellation).await;
+    }
+
     /// Send rich user input items to an existing agent thread.
     pub(crate) async fn send_input(
         &self,
@@ -195,6 +249,8 @@ impl AgentControl {
         input: Vec<UserInput>,
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
+        // Acquire the tree admission barrier before triggering a turn.
+        self.tree_barrier.acquire(CancellationToken::new()).await;
         let state = self.upgrade()?;
         let thread = state.get_thread(agent_id).await?;
         let result = match thread
@@ -225,6 +281,8 @@ impl AgentControl {
         agent_communication_context: AgentCommunicationContext,
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
+        // Acquire the tree admission barrier before triggering a turn.
+        self.tree_barrier.acquire(CancellationToken::new()).await;
         let state = self.upgrade()?;
         if communication.trigger_turn {
             let thread = state.get_thread(agent_id).await?;
@@ -430,6 +488,26 @@ impl AgentControl {
         let mut thread_ids = vec![agent_id];
         thread_ids.extend(self.live_thread_spawn_descendants(agent_id).await?);
         Ok(thread_ids)
+    }
+
+    /// Returns the continuation safety classification for a live thread's
+    /// active turn, or [`ContinuationSafety::Untouched`] when the thread has
+    /// no active turn.
+    pub(crate) async fn get_continuation_safety(
+        &self,
+        thread_id: ThreadId,
+    ) -> crate::session::turn_execution_progress::ContinuationSafety {
+        let Ok(state) = self.upgrade() else {
+            return crate::session::turn_execution_progress::ContinuationSafety::Untouched;
+        };
+        let Ok(thread) = state.get_thread(thread_id).await else {
+            return crate::session::turn_execution_progress::ContinuationSafety::Untouched;
+        };
+        let active = thread.session.active_turn.lock().await;
+        let Some(task) = active.as_ref().and_then(|turn| turn.task.as_ref()) else {
+            return crate::session::turn_execution_progress::ContinuationSafety::Untouched;
+        };
+        task.turn_context.execution_progress.continuation_safety()
     }
 
     pub(crate) async fn get_agent_config_snapshot(
@@ -773,6 +851,13 @@ impl AgentControl {
         self.manager
             .upgrade()
             .ok_or_else(|| CodexErr::UnsupportedOperation("thread manager dropped".to_string()))
+    }
+
+    /// Returns the thread manager state if it is still alive.
+    ///
+    /// Used by tree recovery to access descendant threads.
+    pub(crate) fn upgrade_manager_state(&self) -> Option<Arc<ThreadManagerState>> {
+        self.manager.upgrade()
     }
 
     async fn inherited_environments_for_source(

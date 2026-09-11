@@ -6,6 +6,7 @@ use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::QueuedSubmission;
+use codex_app_server_protocol::QueuedSubmissionState;
 use codex_app_server_protocol::ThreadQueueAddParams;
 use codex_app_server_protocol::ThreadQueueAddResponse;
 use codex_app_server_protocol::ThreadQueueDeleteParams;
@@ -335,5 +336,16 @@ fn api_queued_submission(value: QueuedItem) -> Result<QueuedSubmission, JSONRPCE
         input: content.into_iter().map(Into::into).collect(),
         client_user_message_id: client_id
             .ok_or_else(|| internal_error("queued submission is missing its client message id"))?,
+        schedule_state: Some(match value.state {
+            codex_thread_store::QueuedItemState::Pending => QueuedSubmissionState::Pending,
+            codex_thread_store::QueuedItemState::Blocked => QueuedSubmissionState::Blocked,
+            codex_thread_store::QueuedItemState::Leased => QueuedSubmissionState::Leased,
+            codex_thread_store::QueuedItemState::Done => QueuedSubmissionState::Done,
+        }),
+        not_before_ms: (value.not_before_ms != 0).then_some(value.not_before_ms),
+        block_reason: value.block_reason,
+        attempt_count: (value.attempt_count != 0)
+            .then_some(u32::try_from(value.attempt_count).unwrap_or(0)),
+        last_error: value.last_error,
     })
 }

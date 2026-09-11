@@ -184,6 +184,10 @@ async fn run_compact_task_inner(
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
+    // Mark that a compaction request has started for this turn, so
+    // usage-limit recovery knows the turn has accumulated compaction
+    // state that must be preserved.
+    turn_context.execution_progress.record_compaction_started();
     let compaction_metadata =
         CompactionTurnMetadata::new(trigger, reason, CompactionImplementation::Responses, phase);
     let attempt = CompactionAnalyticsAttempt::begin(
@@ -222,6 +226,11 @@ async fn run_compact_task_inner(
     let status = compaction_status_from_result(&result);
     let codex_error = result.as_ref().err();
     if result.is_ok() {
+        // Mark compaction completion now that the compaction request
+        // has succeeded and the compacted context is durable.
+        turn_context
+            .execution_progress
+            .record_compaction_completed();
         let post_compact_outcome = run_post_compact_hooks(&sess, &turn_context, trigger).await;
         if let PostCompactHookOutcome::Stopped = post_compact_outcome {
             attempt

@@ -636,6 +636,24 @@ pub enum Op {
 
     /// Stop the active root turn without recording a terminal turn event.
     SuspendTurnAndShutdown {
+        /// Epoch-millis deadline after which a recovery job becomes due.
+        /// Zero means due immediately.  Non-zero is typically the
+        /// usage-limit reset time.
+        not_before_ms: i64,
+        reply: oneshot::Sender<CodexResult<SuspendTurnOutcome>>,
+    },
+
+    /// Suspend the entire agent tree (root + live descendants) without
+    /// recording terminal turn events, then shut down all sessions.
+    ///
+    /// Unlike [`Op::SuspendTurnAndShutdown`], this variant seals the tree
+    /// admission barrier, flushes and shuts down descendants child-first,
+    /// and then suspends the root.  The recovery manifest captures real
+    /// member relationships so the tree can be reconstructed during
+    /// recovery.
+    SuspendTreeAndShutdown {
+        /// Epoch-millis deadline after which a recovery job becomes due.
+        not_before_ms: i64,
         reply: oneshot::Sender<CodexResult<SuspendTurnOutcome>>,
     },
 
@@ -945,6 +963,7 @@ impl Op {
             Self::TurnInput { .. } => "turn_input",
             Self::RecoverTurn { .. } => "recover_turn",
             Self::SuspendTurnAndShutdown { .. } => "suspend_turn_and_shutdown",
+            Self::SuspendTreeAndShutdown { .. } => "suspend_tree_and_shutdown",
             Self::ThreadSettings { .. } => "thread_settings",
             Self::TurnSettings { .. } => "turn_settings",
             Self::InterAgentCommunication { .. } => "inter_agent_communication",

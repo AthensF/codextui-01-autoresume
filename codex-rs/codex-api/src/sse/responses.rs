@@ -454,10 +454,13 @@ pub fn process_responses_event(
                     } else {
                         let delay = try_parse_retry_after(&error);
                         let message = error.message.unwrap_or_default();
+                        let resets_at = error.resets_at;
                         response_error = match error.code.as_deref() {
-                            Some("rate_limit_exceeded") => {
-                                ApiError::RateLimitExceeded { message, delay }
-                            }
+                            Some("rate_limit_exceeded") => ApiError::RateLimitExceeded {
+                                message,
+                                delay,
+                                resets_at,
+                            },
                             _ => ApiError::Retryable { message, delay },
                         };
                     }
@@ -1103,7 +1106,7 @@ mod tests {
         assert_eq!(events.len(), 1);
 
         match &events[0] {
-            Err(ApiError::RateLimitExceeded { message, delay }) => {
+            Err(ApiError::RateLimitExceeded { message, delay, .. }) => {
                 assert_eq!(
                     message,
                     "Rate limit reached for gpt-5.1 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."
@@ -1136,6 +1139,7 @@ mod tests {
                         Err(ApiError::RateLimitExceeded {
                             message: actual,
                             delay,
+                            ..
                         }),
                     ],
                 )

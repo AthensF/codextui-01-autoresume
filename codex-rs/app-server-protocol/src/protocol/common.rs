@@ -664,6 +664,18 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadQueueStartResponse,
     },
+    #[experimental("thread/usageLimit/read")]
+    ThreadUsageLimitRead => "thread/usageLimit/read" {
+        params: v2::ThreadUsageLimitReadParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadUsageLimitReadResponse,
+    },
+    #[experimental("thread/usageLimit/action")]
+    ThreadUsageLimitAction => "thread/usageLimit/action" {
+        params: v2::ThreadUsageLimitActionParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadUsageLimitActionResponse,
+    },
     ThreadMetadataUpdate => "thread/metadata/update" {
         params: v2::ThreadMetadataUpdateParams,
         inspect_params: true,
@@ -1905,6 +1917,8 @@ server_notification_definitions! {
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),
     #[experimental("thread/queue/changed")]
     ThreadQueueChanged => "thread/queue/changed" (v2::ThreadQueueChangedNotification),
+    #[experimental("thread/usageLimit/updated")]
+    ThreadUsageLimitUpdated => "thread/usageLimit/updated" (v2::ThreadUsageLimitUpdatedNotification),
     #[experimental("project/changed")]
     ProjectChanged => "project/changed" (v2::ProjectChangedNotification),
     #[experimental("thread/project/updated")]

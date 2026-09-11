@@ -763,6 +763,74 @@ impl App {
             overlay.replace_cells(self.transcript_cells.clone());
         }
     }
+
+    pub(super) fn refresh_usage_limit_status(
+        &mut self,
+        app_server: &AppServerSession,
+        thread_id: ThreadId,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let request_id = RequestId::String(format!("usage-limit-read-{}", Uuid::new_v4()));
+            let result: Result<codex_app_server_protocol::ThreadUsageLimitReadResponse> =
+                request_handle
+                    .request_typed(ClientRequest::ThreadUsageLimitRead {
+                        request_id,
+                        params: codex_app_server_protocol::ThreadUsageLimitReadParams {
+                            thread_id: thread_id.to_string(),
+                        },
+                    })
+                    .await
+                    .wrap_err("thread/usageLimit/read failed in TUI");
+            match result {
+                Ok(response) => {
+                    app_event_tx.send(AppEvent::UsageLimitStatusRead {
+                        snapshot: response.snapshot,
+                    });
+                }
+                Err(err) => {
+                    tracing::warn!("thread/usageLimit/read failed in TUI: {err}");
+                }
+            }
+        });
+    }
+
+    pub(super) fn send_usage_limit_action(
+        &mut self,
+        app_server: &AppServerSession,
+        thread_id: ThreadId,
+        generation: u64,
+        action: codex_app_server_protocol::UsageLimitAction,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let request_id = RequestId::String(format!("usage-limit-action-{}", Uuid::new_v4()));
+            let result: Result<codex_app_server_protocol::ThreadUsageLimitActionResponse> =
+                request_handle
+                    .request_typed(ClientRequest::ThreadUsageLimitAction {
+                        request_id,
+                        params: codex_app_server_protocol::ThreadUsageLimitActionParams {
+                            thread_id: thread_id.to_string(),
+                            generation,
+                            action,
+                        },
+                    })
+                    .await
+                    .wrap_err("thread/usageLimit/action failed in TUI");
+            match result {
+                Ok(response) => {
+                    app_event_tx.send(AppEvent::UsageLimitActionResult {
+                        result: response.result,
+                    });
+                }
+                Err(err) => {
+                    tracing::warn!("thread/usageLimit/action failed in TUI: {err}");
+                }
+            }
+        });
+    }
 }
 
 pub(super) async fn fetch_all_mcp_server_statuses(

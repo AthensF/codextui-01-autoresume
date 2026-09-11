@@ -610,12 +610,36 @@ pub(super) async fn submission_loop(
                     let _ = reply.send(result);
                     false
                 }
-                Op::SuspendTurnAndShutdown { reply } => {
-                    let result =
-                        super::turn_suspension::suspend_turn_and_shutdown(&sess, sub.id.clone())
-                            .await;
+                Op::SuspendTurnAndShutdown {
+                    not_before_ms,
+                    reply,
+                } => {
+                    let result = super::turn_suspension::suspend_turn_and_shutdown(
+                        &sess,
+                        sub.id.clone(),
+                        not_before_ms,
+                        &[],
+                    )
+                    .await;
                     // Exit only after history is durable and its writer has closed; an error
                     // must leave responsibility for the thread with the current worker.
+                    let should_exit = matches!(
+                        &result,
+                        Ok(codex_protocol::turn_input::SuspendTurnOutcome::Suspended { .. })
+                    );
+                    let _ = reply.send(result);
+                    should_exit
+                }
+                Op::SuspendTreeAndShutdown {
+                    not_before_ms,
+                    reply,
+                } => {
+                    let result = super::turn_suspension::suspend_tree_and_shutdown(
+                        &sess,
+                        sub.id.clone(),
+                        not_before_ms,
+                    )
+                    .await;
                     let should_exit = matches!(
                         &result,
                         Ok(codex_protocol::turn_input::SuspendTurnOutcome::Suspended { .. })

@@ -144,6 +144,7 @@ impl ChatWidget {
             || self.input_queue.suppress_queue_autosend
             || self.input_queue.rate_limit_recovery_pending
             || self.input_queue.recovered_queue
+            || self.usage_limit_wait.is_tree_closed()
         {
             return false;
         }

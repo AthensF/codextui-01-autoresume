@@ -1475,6 +1475,7 @@ impl ThreadManager {
             Arc::downgrade(&self.state),
             self.state.thread_id_generator.clone(),
             /*rollout_budget*/ None,
+            /*usage_limits*/ None,
         )
     }
 
@@ -1483,6 +1484,7 @@ impl ThreadManager {
             Arc::downgrade(&self.state),
             self.state.thread_id_generator.clone(),
             config.rollout_budget.clone(),
+            Some(&config.usage_limits),
         )
     }
 

@@ -2225,6 +2225,7 @@ dependencies = [
  "codex-state",
  "codex-thread-store",
  "codex-tools",
+ "codex-usage-limits",
  "codex-user-verification",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
@@ -3019,6 +3020,7 @@ dependencies = [
  "codex-test-binary-support",
  "codex-thread-store",
  "codex-tools",
+ "codex-usage-limits",
  "codex-utils-absolute-path",
  "codex-utils-audio",
  "codex-utils-cache",
@@ -4235,6 +4237,7 @@ name = "codex-queue-extension"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "codex-core",
  "codex-extension-api",
  "codex-protocol",
@@ -4242,7 +4245,9 @@ dependencies = [
  "codex-thread-store",
  "codex-utils-absolute-path",
  "core_test_support",
+ "futures",
  "pretty_assertions",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -4778,6 +4783,21 @@ dependencies = [
  "tokio-util",
  "uds_windows",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "codex-usage-limits"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

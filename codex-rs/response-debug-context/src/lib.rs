@@ -152,6 +152,7 @@ mod tests {
             telemetry_api_error_message(&ApiError::RateLimitExceeded {
                 message: "private upstream diagnostic".to_string(),
                 delay: Some(std::time::Duration::from_secs(1)),
+                resets_at: None,
             }),
             "rate limit exceeded"
         );

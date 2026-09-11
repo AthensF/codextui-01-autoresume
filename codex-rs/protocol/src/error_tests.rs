@@ -700,3 +700,53 @@ fn usage_limit_reached_with_promo_message() {
         assert_eq!(err.to_string(), expected);
     });
 }
+
+#[test]
+fn usage_limit_recovery_hint_attaches_to_codex_err() {
+    let resets_at = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+    let mut hint = UsageLimitRecoveryHint::new(UsageLimitRecoveryKind::UsageWindow);
+    hint.http_status_code = Some(429);
+    hint.resets_at = Some(resets_at);
+    hint.retry_after = Some(Duration::from_secs(120));
+    hint.limit_id = Some("codex".to_string());
+
+    let err = CodexErr::UsageLimitReached(UsageLimitReachedError {
+        plan_type: None,
+        resets_at: Some(resets_at),
+        rate_limits: None,
+        promo_message: None,
+        rate_limit_reached_type: None,
+    })
+    .with_usage_limit_recovery_hint(hint);
+
+    let recovered = err.usage_limit_recovery_hint().expect("hint should be set");
+    assert_eq!(recovered.kind, UsageLimitRecoveryKind::UsageWindow);
+    assert_eq!(recovered.http_status_code, Some(429));
+    assert_eq!(recovered.resets_at, Some(resets_at));
+    assert_eq!(recovered.retry_after, Some(Duration::from_secs(120)));
+    assert_eq!(recovered.limit_id.as_deref(), Some("codex"));
+}
+
+#[test]
+fn usage_limit_recovery_hint_defaults_to_none() {
+    let err = CodexErr::Timeout;
+    assert!(err.usage_limit_recovery_hint().is_none());
+}
+
+#[test]
+fn usage_limit_recovery_hint_preserved_through_from_conversion() {
+    let mut hint = UsageLimitRecoveryHint::new(UsageLimitRecoveryKind::GenericTooManyRequests);
+    hint.http_status_code = Some(429);
+
+    let err: CodexErr = CodexErrorDetails::RateLimitExceeded("retry".into()).into();
+    let err = err.with_usage_limit_recovery_hint(hint);
+
+    assert_eq!(
+        err.usage_limit_recovery_hint().unwrap().kind,
+        UsageLimitRecoveryKind::GenericTooManyRequests
+    );
+    assert_eq!(
+        err.usage_limit_recovery_hint().unwrap().http_status_code,
+        Some(429)
+    );
+}

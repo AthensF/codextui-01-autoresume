@@ -509,6 +509,9 @@ impl ChatWidget {
                     self.open_usage_menu();
                 }
             }
+            SlashCommand::UsageLimit => {
+                self.open_usage_limit_menu();
+            }
             SlashCommand::Ide => {
                 self.handle_ide_command();
             }
@@ -1194,6 +1197,7 @@ impl ChatWidget {
             | SlashCommand::Rename
             | SlashCommand::Voice
             | SlashCommand::Recap
+            | SlashCommand::UsageLimit
             | SlashCommand::TestApproval => QueueDrain::Continue,
             SlashCommand::Cd => match self.thread_id {
                 Some(thread_id) if self.can_change_working_directory(thread_id) => QueueDrain::Stop,

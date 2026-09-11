@@ -152,6 +152,13 @@ impl ToolCallRuntime {
                 };
                 // Admission through the parallel-execution gate marks the end
                 // of dispatch waiting and the start of handler execution.
+                // Record this as a tool dispatch in the turn's execution
+                // progress so that usage-limit recovery knows side effects
+                // may have occurred.
+                step_context
+                    .turn
+                    .execution_progress
+                    .record_tool_dispatched();
                 if let Some(execution_started_at) = execution_started_at {
                     let _ = execution_started_at.set(Instant::now());
                 }

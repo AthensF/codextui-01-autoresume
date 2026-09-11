@@ -118,7 +118,7 @@ async fn root_turn_suspension_preserves_unfinished_turn_history() {
 
     assert_eq!(
         codex
-            .suspend_turn_and_shutdown()
+            .suspend_turn_and_shutdown(/*not_before_ms*/ 0)
             .await
             .expect("reject handoff while a descendant remains loaded"),
         SuspendTurnOutcome::HasLiveDescendants,
@@ -137,7 +137,7 @@ async fn root_turn_suspension_preserves_unfinished_turn_history() {
     // and removed; suspension only consults the current live subtree.
     assert_eq!(
         codex
-            .suspend_turn_and_shutdown()
+            .suspend_turn_and_shutdown(/*not_before_ms*/ 0)
             .await
             .expect("stop and close the old writer"),
         SuspendTurnOutcome::Suspended {
@@ -202,6 +202,83 @@ async fn root_turn_suspension_preserves_unfinished_turn_history() {
         unreachable!("wait_for_event returned unexpected event");
     };
     assert_eq!(completed.turn_id, turn_id);
+}
+
+/// Integration test: with a live descendant loaded, `suspend_tree_and_shutdown`
+/// suspends the entire tree (root + descendant) rather than rejecting with
+/// `HasLiveDescendants`.  The root's durable rollout must not contain terminal
+/// turn events, preserving it for later recovery.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tree_suspension_suspends_root_with_live_descendant() {
+    let server = start_mock_server().await;
+    mount_response_once(
+        &server,
+        sse_response(sse(vec![
+            ev_response_created("suspended_tree_response"),
+            ev_completed("suspended_tree_response"),
+        ]))
+        .set_delay(Duration::from_secs(60)),
+    )
+    .await;
+    let test = test_codex()
+        .with_model("gpt-5.4")
+        .build_with_auto_env(&server)
+        .await
+        .expect("start persistent root thread");
+    let codex = Arc::clone(&test.codex);
+    let _descendant = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: test.session_configured.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            ..StartThreadOptions::new(test.config.clone())
+        })
+        .await
+        .expect("start a currently loaded descendant");
+    let submitted = codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "preserve this tree's unfinished turn".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await
+        .expect("start root turn");
+    let codex_core::TurnInputSubmission::Started { turn_id } = submitted else {
+        panic!("expected a started root turn");
+    };
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnStarted(_))).await;
+
+    // Tree-level suspension should succeed even with a live descendant.
+    assert_eq!(
+        codex
+            .suspend_tree_and_shutdown(/*not_before_ms*/ 0)
+            .await
+            .expect("suspend the entire tree"),
+        SuspendTurnOutcome::Suspended {
+            turn_id: turn_id.clone(),
+        },
+    );
+
+    let rollout_path = codex.rollout_path().expect("rollout path");
+    let rollout = tokio::fs::read_to_string(&rollout_path)
+        .await
+        .expect("read durable rollout");
+    let items = rollout
+        .lines()
+        .map(|line| {
+            codex_rollout::parse_rollout_line(line)
+                .expect("parse durable rollout")
+                .item
+        })
+        .collect::<Vec<_>>();
+    assert!(items.iter().all(|item| !matches!(
+        item,
+        RolloutItem::EventMsg(EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_))
+    )));
 }
 
 /// After an interrupt we expect the next request to the model to include both

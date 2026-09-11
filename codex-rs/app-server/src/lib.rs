@@ -125,6 +125,7 @@ mod notification_media;
 mod otel_reloader;
 mod outgoing_message;
 mod plugin_config_reload;
+mod queue_runner;
 mod request_processors;
 mod request_serialization;
 mod server_request_error;
@@ -1227,6 +1228,8 @@ pub async fn run_main_with_transport_options(
                 ))
                 .await;
                 connection_cleanup_tasks.drain().await;
+                processor.shutdown_queue_runner().await;
+                processor.suspend_waiting_threads().await;
                 processor.drain_background_tasks().await;
                 processor.shutdown_threads().await;
             } else {

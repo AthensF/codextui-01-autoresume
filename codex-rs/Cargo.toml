@@ -146,6 +146,7 @@ members = [
     "codex-experimental-api-macros",
     "plugin",
     "model-provider",
+    "usage-limits",
 ]
 resolver = "2"
 
@@ -270,6 +271,7 @@ codex-thread-store = { path = "thread-store" }
 codex-tools = { path = "tools" }
 codex-tui = { path = "tui" }
 codex-uds = { path = "uds" }
+codex-usage-limits = { path = "usage-limits" }
 codex-utils-absolute-path = { path = "utils/absolute-path" }
 codex-utils-approval-presets = { path = "utils/approval-presets" }
 codex-utils-audio = { path = "utils/audio" }

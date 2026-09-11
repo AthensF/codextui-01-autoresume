@@ -414,6 +414,93 @@ impl From<MemoriesToml> for MemoriesConfig {
     }
 }
 
+/// Usage-limit queueing and auto-resume settings loaded from config.toml.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct UsageLimitsToml {
+    /// When `true`, submissions are queued locally when an authoritative account
+    /// snapshot says ordinary usage is unavailable. Defaults to `true`.
+    pub queue_when_limited: Option<bool>,
+    /// When `true`, suspended work is automatically revalidated after the reset
+    /// deadline. Defaults to `true`.
+    pub auto_resume: Option<bool>,
+    /// Maximum number of usage-window crossings that may be automatically
+    /// resumed. Defaults to `1`. `0` permits queue/suspend visibility and manual
+    /// retry but no automatic crossing.
+    #[schemars(range(min = 0, max = 100))]
+    pub max_auto_resumes: Option<u32>,
+    /// Maximum number of availability probes for unknown-reset 429s before
+    /// transitioning to manual wait. Defaults to `6`.
+    #[schemars(range(min = 0, max = 100))]
+    pub max_availability_checks: Option<u32>,
+    /// Base delay in seconds for the first unknown-reset probe and the
+    /// exponential base for subsequent probes. Defaults to `60` (1 minute).
+    #[schemars(range(min = 1))]
+    pub unknown_reset_base_delay_seconds: Option<u64>,
+    /// Maximum interval in seconds between unknown-reset probes. Defaults to
+    /// `1800` (30 minutes).
+    #[schemars(range(min = 1))]
+    pub unknown_reset_max_interval_seconds: Option<u64>,
+    /// Wall-clock ceiling in seconds for unknown-reset probing, measured from
+    /// the first probe. Defaults to `7200` (2 hours).
+    #[schemars(range(min = 1))]
+    pub unknown_reset_max_wait_seconds: Option<u64>,
+}
+
+/// Effective usage-limit settings after defaults are applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UsageLimitsConfig {
+    pub queue_when_limited: bool,
+    pub auto_resume: bool,
+    pub max_auto_resumes: u32,
+    pub max_availability_checks: u32,
+    pub unknown_reset_base_delay_seconds: u64,
+    pub unknown_reset_max_interval_seconds: u64,
+    pub unknown_reset_max_wait_seconds: u64,
+}
+
+impl Default for UsageLimitsConfig {
+    fn default() -> Self {
+        Self {
+            queue_when_limited: true,
+            auto_resume: true,
+            max_auto_resumes: 1,
+            max_availability_checks: 6,
+            unknown_reset_base_delay_seconds: 60,
+            unknown_reset_max_interval_seconds: 1800,
+            unknown_reset_max_wait_seconds: 7200,
+        }
+    }
+}
+
+impl From<UsageLimitsToml> for UsageLimitsConfig {
+    fn from(toml: UsageLimitsToml) -> Self {
+        let defaults = Self::default();
+        Self {
+            queue_when_limited: toml
+                .queue_when_limited
+                .unwrap_or(defaults.queue_when_limited),
+            auto_resume: toml.auto_resume.unwrap_or(defaults.auto_resume),
+            max_auto_resumes: toml.max_auto_resumes.unwrap_or(defaults.max_auto_resumes),
+            max_availability_checks: toml
+                .max_availability_checks
+                .unwrap_or(defaults.max_availability_checks),
+            unknown_reset_base_delay_seconds: toml
+                .unknown_reset_base_delay_seconds
+                .unwrap_or(defaults.unknown_reset_base_delay_seconds)
+                .max(1),
+            unknown_reset_max_interval_seconds: toml
+                .unknown_reset_max_interval_seconds
+                .unwrap_or(defaults.unknown_reset_max_interval_seconds)
+                .max(1),
+            unknown_reset_max_wait_seconds: toml
+                .unknown_reset_max_wait_seconds
+                .unwrap_or(defaults.unknown_reset_max_wait_seconds)
+                .max(1),
+        }
+    }
+}
+
 /// Default settings that apply to all apps.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]

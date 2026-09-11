@@ -14,10 +14,13 @@ doctest = false
 workspace = true
 
 [dependencies]
+chrono = { workspace = true }
 codex-core = { workspace = true }
 codex-extension-api = { workspace = true }
 codex-protocol = { workspace = true }
 codex-thread-store = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time"] }

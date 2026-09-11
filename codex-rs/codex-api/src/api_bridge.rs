@@ -13,10 +13,15 @@ use codex_protocol::error::ConnectionFailedError;
 use codex_protocol::error::RetryLimitReachedError;
 use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::error::UsageLimitReachedError;
+use codex_protocol::error::UsageLimitRecoveryHint;
+use codex_protocol::error::UsageLimitRecoveryKind;
 use codex_protocol::protocol::MisalignmentErrorDetails;
+use codex_protocol::protocol::RateLimitSnapshot;
 use http::HeaderMap;
+use http::HeaderValue;
 use serde::Deserialize;
 use serde_json::Value;
+use std::time::Duration;
 
 pub fn map_api_error(err: ApiError) -> CodexErr {
     match err {
@@ -30,12 +35,27 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 None => error,
             }
         }
-        ApiError::RateLimitExceeded { message, delay } => {
-            let error = CodexErr::new(CodexErrorDetails::RateLimitExceeded(message));
-            match delay {
-                Some(delay) => error.with_retry_delay(delay),
-                None => error,
+        ApiError::RateLimitExceeded {
+            message,
+            delay,
+            resets_at,
+        } => {
+            let now = Utc::now();
+            let mut hint = UsageLimitRecoveryHint::new(UsageLimitRecoveryKind::TransientRateLimit);
+            // Preserve the legacy `retry_delay` field for the existing short retry loop
+            // alongside the coordinator recovery hint. Zero-duration advice is treated
+            // as unknown so the coordinator does not schedule an immediate request.
+            let valid_delay = delay.filter(|d| !d.is_zero());
+            hint.retry_after = valid_delay;
+            hint.resets_at = resets_at
+                .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0))
+                .filter(|dt| *dt > now);
+            let mut err = CodexErr::new(CodexErrorDetails::RateLimitExceeded(message))
+                .with_usage_limit_recovery_hint(hint);
+            if let Some(d) = valid_delay {
+                err = err.with_retry_delay(d);
             }
+            err
         }
         ApiError::Stream(msg) => CodexErr::Stream(msg),
         ApiError::ServerOverloaded => CodexErr::ServerOverloaded,
@@ -146,26 +166,46 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                                     snapshot.rate_limit_reached_type = rate_limit_reached_type;
                                     snapshot
                                 });
-                            let resets_at = err
-                                .error
-                                .resets_at
-                                .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0));
+                            // Choose the latest future blocking reset from both the
+                            // explicit body timestamp and all exhausted
+                            // (`used_percent >= 100`) rate-limit windows. Past or
+                            // invalid timestamps are rejected so the coordinator
+                            // treats them as unknown rather than scheduling an
+                            // immediate request.
+                            let authoritative_reset =
+                                authoritative_resets_at(err.error.resets_at, rate_limits.as_ref());
+                            let mut hint =
+                                UsageLimitRecoveryHint::new(UsageLimitRecoveryKind::UsageWindow);
+                            hint.http_status_code = Some(status.as_u16());
+                            hint.resets_at = authoritative_reset;
+                            hint.rate_limits = rate_limits.clone().map(Box::new);
+                            hint.limit_id = limit_id;
                             return CodexErr::UsageLimitReached(UsageLimitReachedError {
                                 plan_type: err.error.plan_type,
-                                resets_at,
+                                resets_at: authoritative_reset,
                                 rate_limits: rate_limits.map(Box::new),
                                 promo_message,
                                 rate_limit_reached_type,
-                            });
+                            })
+                            .with_usage_limit_recovery_hint(hint);
                         } else if err.error.error_type.as_deref() == Some("usage_not_included") {
+                            // Entitlement/quota errors are intervention-only; no
+                            // recovery hint is attached so the coordinator never
+                            // schedules an automatic wait for them.
                             return CodexErr::UsageNotIncluded;
                         }
                     }
 
+                    let retry_after = parse_retry_after_header(headers.as_ref());
+                    let mut hint =
+                        UsageLimitRecoveryHint::new(UsageLimitRecoveryKind::GenericTooManyRequests);
+                    hint.http_status_code = Some(status.as_u16());
+                    hint.retry_after = retry_after;
                     CodexErr::RetryLimit(RetryLimitReachedError {
                         status,
                         request_id: extract_request_tracking_id(headers.as_ref()),
                     })
+                    .with_usage_limit_recovery_hint(hint)
                 } else {
                     CodexErr::UnexpectedStatus(UnexpectedResponseError {
                         status,
@@ -241,6 +281,75 @@ fn extract_header(headers: Option<&HeaderMap>, name: &str) -> Option<String> {
             .and_then(|value| value.to_str().ok())
             .map(str::to_string)
     })
+}
+
+/// Parse a standard `Retry-After` header into a [`Duration`].
+///
+/// Supports both delta-seconds (`Retry-After: 120`) and HTTP-date
+/// (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`) forms. Returns `None` for
+/// malformed or past dates so callers treat them as unknown rather than
+/// immediately hammering the endpoint.
+fn parse_retry_after_header(headers: Option<&HeaderMap>) -> Option<Duration> {
+    let value = headers?.get("retry-after")?;
+    parse_retry_after_value(value)
+}
+
+fn parse_retry_after_value(value: &HeaderValue) -> Option<Duration> {
+    let text = value.to_str().ok()?;
+    // Try delta-seconds first (most common). A zero-duration `Retry-After: 0`
+    // is treated as unknown so the coordinator does not schedule an immediate
+    // request based on meaningless advice.
+    if let Ok(seconds) = text.trim().parse::<u64>() {
+        return (seconds > 0).then_some(Duration::from_secs(seconds));
+    }
+    // Fall back to HTTP-date per RFC 7231.
+    let date = chrono::DateTime::parse_from_rfc2822(text.trim()).ok()?;
+    let now = Utc::now();
+    if date > now {
+        let duration = (date.with_timezone(&Utc) - now).to_std().ok()?;
+        (!duration.is_zero()).then_some(duration)
+    } else {
+        None
+    }
+}
+
+/// Choose the latest future blocking reset from the explicit body `resets_at`
+/// timestamp and all exhausted (`used_percent >= 100`) rate-limit windows.
+///
+/// Past, invalid, or absent timestamps are rejected so the coordinator treats
+/// them as unknown rather than scheduling an immediate request.
+fn authoritative_resets_at(
+    body_resets_at: Option<i64>,
+    rate_limits: Option<&RateLimitSnapshot>,
+) -> Option<DateTime<Utc>> {
+    let now = Utc::now();
+    let mut candidates: Vec<DateTime<Utc>> = Vec::new();
+
+    if let Some(seconds) = body_resets_at
+        && let Some(dt) = DateTime::<Utc>::from_timestamp(seconds, 0)
+        && dt > now
+    {
+        candidates.push(dt);
+    }
+
+    if let Some(snapshot) = rate_limits {
+        for window in snapshot
+            .primary
+            .as_ref()
+            .into_iter()
+            .chain(snapshot.secondary.as_ref())
+        {
+            if window.used_percent >= 100.0
+                && let Some(seconds) = window.resets_at
+                && let Some(dt) = DateTime::<Utc>::from_timestamp(seconds, 0)
+                && dt > now
+            {
+                candidates.push(dt);
+            }
+        }
+    }
+
+    candidates.into_iter().max()
 }
 
 fn extract_x_error_json_code(headers: Option<&HeaderMap>) -> Option<String> {

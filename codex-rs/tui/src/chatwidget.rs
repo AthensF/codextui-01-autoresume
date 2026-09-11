@@ -455,6 +455,8 @@ mod turn_lifecycle;
 mod turn_runtime;
 use self::turn_lifecycle::TurnLifecycleState;
 mod usage;
+mod usage_limit_wait;
+use self::usage_limit_wait::UsageLimitWaitState;
 mod user_messages;
 mod working_directory;
 use self::user_messages::PendingSteer;
@@ -646,6 +648,7 @@ pub(crate) struct ChatWidget {
     realtime_conversation: RealtimeConversationUiState,
     realtime_conversation_available_for_thread: bool,
     safety_buffering: SafetyBufferingState,
+    usage_limit_wait: UsageLimitWaitState,
     task_complete_pending: bool,
     unified_exec_processes: Vec<UnifiedExecProcessSummary>,
     /// Tracks per-server MCP startup state while startup is in progress.

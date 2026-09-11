@@ -47,6 +47,7 @@ use crate::request_processors::ThreadGoalRequestProcessor;
 use crate::request_processors::ThreadQueueRequestProcessor;
 use crate::request_processors::ThreadRequestProcessor;
 use crate::request_processors::TurnRequestProcessor;
+use crate::request_processors::UsageLimitRequestProcessor;
 use crate::request_processors::WindowsSandboxRequestProcessor;
 use crate::request_processors::read_server_diagnostics;
 use crate::request_serialization::QueuedInitializedRequest;
@@ -144,6 +145,7 @@ pub(crate) struct MessageProcessor {
     models_refresh_worker: ModelsRefreshWorker,
     turn_cost_worker: Option<TurnCostWorker>,
     skills_watcher: Arc<SkillsWatcher>,
+    queue_runner: Option<crate::queue_runner::QueueRunner>,
     account_processor: AccountRequestProcessor,
     apps_processor: AppsRequestProcessor,
     catalog_processor: CatalogRequestProcessor,
@@ -166,6 +168,7 @@ pub(crate) struct MessageProcessor {
     thread_queue_processor: ThreadQueueRequestProcessor,
     thread_processor: ThreadRequestProcessor,
     turn_processor: TurnRequestProcessor,
+    usage_limit_processor: UsageLimitRequestProcessor,
     windows_sandbox_processor: WindowsSandboxRequestProcessor,
     request_serialization_queues: RequestSerializationQueues,
 }
@@ -387,6 +390,25 @@ impl MessageProcessor {
             outgoing.clone(),
         );
 
+        // Start the durable queue scheduler if a queue store is configured.
+        // The runner recovers expired leases from previous processes and
+        // spawns a background task that dispatches due items, loading
+        // unloaded threads as needed.
+        let queue_runner = if let Some(queue_service) = queue_service.as_ref() {
+            let loader = Arc::new(crate::queue_runner::AppServerThreadLoader::new(
+                Arc::clone(&thread_manager),
+                Arc::clone(&thread_store),
+                Arc::clone(&config),
+                Arc::clone(&auth_manager),
+            ));
+            Some(crate::queue_runner::QueueRunner::start(
+                Arc::clone(queue_service),
+                loader,
+            ))
+        } else {
+            None
+        };
+
         let pending_thread_unloads = Arc::new(Mutex::new(HashSet::new()));
         let thread_watch_manager =
             crate::thread_status::ThreadWatchManager::new_with_outgoing(outgoing.clone());
@@ -492,6 +514,7 @@ impl MessageProcessor {
             outgoing.clone(),
             queue_service,
         );
+        let usage_limit_processor = UsageLimitRequestProcessor::new(Arc::clone(&thread_manager));
         let project_processor = ProjectRequestProcessor::new(
             Arc::clone(&thread_store),
             outgoing.clone(),
@@ -582,6 +605,7 @@ impl MessageProcessor {
             models_refresh_worker,
             turn_cost_worker,
             skills_watcher,
+            queue_runner,
             account_processor,
             apps_processor,
             catalog_processor,
@@ -604,6 +628,7 @@ impl MessageProcessor {
             thread_queue_processor,
             thread_processor,
             turn_processor,
+            usage_limit_processor,
             windows_sandbox_processor,
             request_serialization_queues,
         }
@@ -805,6 +830,117 @@ impl MessageProcessor {
             worker.shutdown();
         }
         self.thread_processor.drain_background_tasks().await;
+    }
+
+    /// Stops the durable queue scheduler from claiming new jobs and releases
+    /// owned leases so a replacement process can take over without duplicate
+    /// dispatch.
+    pub(crate) async fn shutdown_queue_runner(&self) {
+        if let Some(runner) = &self.queue_runner {
+            runner.shutdown().await;
+        }
+    }
+
+    /// Suspends threads that are waiting on a usage limit so their unfinished
+    /// turns are durably enqueued for recovery by a replacement process.
+    ///
+    /// Called between [`shutdown_queue_runner`] and [`shutdown_threads`] so
+    /// the scheduler has stopped claiming new work before recovery manifests
+    /// are enqueued, and the threads are fully shut down afterwards.
+    pub(crate) async fn suspend_waiting_threads(&self) {
+        let thread_ids = self
+            .thread_processor
+            .thread_manager()
+            .list_thread_ids()
+            .await;
+        for thread_id in thread_ids {
+            let Ok(thread) = self
+                .thread_processor
+                .thread_manager()
+                .get_thread(thread_id)
+                .await
+            else {
+                continue;
+            };
+            let Some(snapshot) = thread.usage_limit_snapshot().await else {
+                continue;
+            };
+            // Only suspend threads that are actively waiting for a reset.
+            if !matches!(
+                snapshot.phase,
+                codex_usage_limits::WaitPhase::Suspending
+                    | codex_usage_limits::WaitPhase::Suspended
+                    | codex_usage_limits::WaitPhase::Revalidating
+                    | codex_usage_limits::WaitPhase::Resuming
+                    | codex_usage_limits::WaitPhase::ManualWait
+            ) {
+                continue;
+            }
+            // Convert reset_at (Unix seconds) to epoch millis for the queue.
+            let not_before_ms = snapshot
+                .reset_at
+                .map(|s| s.saturating_mul(1000))
+                .unwrap_or(0);
+            tracing::info!(
+                %thread_id,
+                phase = ?snapshot.phase,
+                not_before_ms,
+                "suspending waiting thread for durable recovery"
+            );
+            match thread
+                .suspend_turn_and_shutdown(/*not_before_ms*/ not_before_ms)
+                .await
+            {
+                Ok(codex_protocol::turn_input::SuspendTurnOutcome::Suspended { turn_id }) => {
+                    tracing::info!(%thread_id, %turn_id, "suspended waiting thread");
+                }
+                Ok(codex_protocol::turn_input::SuspendTurnOutcome::HasLiveDescendants) => {
+                    tracing::info!(
+                        %thread_id,
+                        "root has live descendants; retrying with tree-level suspension"
+                    );
+                    match thread
+                        .suspend_tree_and_shutdown(/*not_before_ms*/ not_before_ms)
+                        .await
+                    {
+                        Ok(codex_protocol::turn_input::SuspendTurnOutcome::Suspended {
+                            turn_id,
+                        }) => {
+                            tracing::info!(%thread_id, %turn_id, "suspended waiting tree");
+                        }
+                        Ok(codex_protocol::turn_input::SuspendTurnOutcome::AttentionRequired {
+                            reason,
+                        }) => {
+                            tracing::warn!(
+                                %thread_id,
+                                %reason,
+                                "tree suspension requires attention; not auto-recovering"
+                            );
+                        }
+                        Ok(other) => {
+                            tracing::debug!(
+                                %thread_id,
+                                outcome = ?other,
+                                "tree not suspended"
+                            );
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                %thread_id,
+                                %error,
+                                "failed to suspend waiting tree"
+                            );
+                        }
+                    }
+                }
+                Ok(other) => {
+                    tracing::debug!(%thread_id, outcome = ?other, "thread not suspended");
+                }
+                Err(error) => {
+                    tracing::warn!(%thread_id, %error, "failed to suspend waiting thread");
+                }
+            }
+        }
     }
 
     pub(crate) async fn cancel_active_login(&self) {
@@ -1342,6 +1478,16 @@ impl MessageProcessor {
             ClientRequest::ThreadQueueStart { params, .. } => self
                 .thread_queue_processor
                 .start(&request_id, params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::ThreadUsageLimitRead { params, .. } => self
+                .usage_limit_processor
+                .read(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::ThreadUsageLimitAction { params, .. } => self
+                .usage_limit_processor
+                .action(params)
                 .await
                 .map(|response| Some(response.into())),
             ClientRequest::ThreadMetadataUpdate { params, .. } => {

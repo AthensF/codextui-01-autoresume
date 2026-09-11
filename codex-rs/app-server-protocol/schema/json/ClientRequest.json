@@ -5553,6 +5553,47 @@
       ],
       "type": "object"
     },
+    "UsageLimitAction": {
+      "description": "Action variant for `thread/usageLimit/action`.",
+      "oneOf": [
+        {
+          "description": "Manually trigger a revalidation probe now.",
+          "enum": [
+            "retryNow"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Enable or disable automatic resume for the current generation.",
+          "properties": {
+            "setAutoResume": {
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "enabled"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "setAutoResume"
+          ],
+          "title": "SetAutoResumeUsageLimitAction",
+          "type": "object"
+        },
+        {
+          "description": "Cancel the entire coordinated tree wait.",
+          "enum": [
+            "cancel"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "UserInput": {
       "oneOf": [
         {

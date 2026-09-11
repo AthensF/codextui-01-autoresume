@@ -13451,6 +13451,22 @@
     },
     "QueuedSubmission": {
       "properties": {
+        "attemptCount": {
+          "description": "Number of failed dispatch attempts.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "blockReason": {
+          "description": "Short string describing why the submission is blocked, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "clientUserMessageId": {
           "type": "string"
         },
@@ -13462,6 +13478,32 @@
             "$ref": "#/definitions/UserInput"
           },
           "type": "array"
+        },
+        "lastError": {
+          "description": "Bounded error message from the most recent failure.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notBeforeMs": {
+          "description": "Earliest wall-clock time (epoch ms) the submission may be dispatched.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "scheduleState": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/QueuedSubmissionState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Scheduling state of the queued submission."
         }
       },
       "required": [
@@ -13470,6 +13512,39 @@
         "input"
       ],
       "type": "object"
+    },
+    "QueuedSubmissionState": {
+      "description": "Scheduling state of a queued submission.",
+      "oneOf": [
+        {
+          "description": "Waiting to be dispatched (possibly with a future `notBeforeMs`).",
+          "enum": [
+            "pending"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Blocked by a usage limit or other transient condition.",
+          "enum": [
+            "blocked"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Currently being dispatched by a worker.",
+          "enum": [
+            "leased"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Completed and acknowledged.",
+          "enum": [
+            "done"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "RateLimitReachedType": {
       "enum": [
@@ -15869,6 +15944,26 @@
             "params"
           ],
           "title": "Thread/queue/changedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/usageLimit/updated"
+              ],
+              "title": "Thread/usageLimit/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadUsageLimitUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/usageLimit/updatedNotification",
           "type": "object"
         },
         {
@@ -22092,6 +22187,31 @@
       ],
       "type": "object"
     },
+    "ThreadUsageLimitUpdatedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Notification payload for `thread/usageLimit/updated`.",
+      "properties": {
+        "snapshot": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UsageLimitSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Current coordinator snapshot, or `null` if the wait cleared."
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadUsageLimitUpdatedNotification",
+      "type": "object"
+    },
     "TokenUsageBreakdown": {
       "properties": {
         "cacheWriteInputTokens": {
@@ -22740,6 +22860,344 @@
         "data"
       ],
       "type": "object"
+    },
+    "UsageLimitAction": {
+      "description": "Action variant for `thread/usageLimit/action`.",
+      "oneOf": [
+        {
+          "description": "Manually trigger a revalidation probe now.",
+          "enum": [
+            "retryNow"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Enable or disable automatic resume for the current generation.",
+          "properties": {
+            "setAutoResume": {
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "enabled"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "setAutoResume"
+          ],
+          "title": "SetAutoResumeUsageLimitAction",
+          "type": "object"
+        },
+        {
+          "description": "Cancel the entire coordinated tree wait.",
+          "enum": [
+            "cancel"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "UsageLimitActionResult": {
+      "description": "Result of applying a usage-limit action.",
+      "oneOf": [
+        {
+          "description": "The action was applied successfully.",
+          "enum": [
+            "applied"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The generation is stale; the action was ignored.",
+          "enum": [
+            "staleGeneration"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "UsageLimitClassification": {
+      "description": "Classification of a waitable usage-limit encounter.",
+      "oneOf": [
+        {
+          "description": "Account usage-window exhaustion with an authoritative reset timestamp.",
+          "enum": [
+            "usageWindow"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Transient response-stream rate limit.",
+          "enum": [
+            "transientRateLimit"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Generic HTTP 429 with no structured reset metadata.",
+          "enum": [
+            "genericTooManyRequests"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "UsageLimitManualWaitReason": {
+      "description": "Why automatic probing stopped and manual retry is required.",
+      "oneOf": [
+        {
+          "description": "`auto_resume` is disabled.",
+          "enum": [
+            "autoResumeDisabled"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`max_auto_resumes` has been reached.",
+          "enum": [
+            "autoResumeLimitReached"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`max_availability_checks` has been reached.",
+          "enum": [
+            "availabilityCheckLimitReached"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`unknown_reset_max_wait_seconds` wall-clock ceiling reached.",
+          "enum": [
+            "waitCeilingReached"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "UsageLimitSnapshot": {
+      "description": "Immutable snapshot of the coordinator state for a single wait generation.",
+      "properties": {
+        "autoResumeEnabled": {
+          "description": "Whether automatic resume is enabled for this generation.",
+          "type": "boolean"
+        },
+        "automaticResumesUsed": {
+          "description": "Number of automatic resumes consumed so far.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "availabilityChecksUsed": {
+          "description": "Number of unknown-reset probes issued so far.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "classification": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/UsageLimitClassification"
+            }
+          ],
+          "description": "Classification of the original encounter."
+        },
+        "expectedParticipants": {
+          "description": "Thread IDs expected to park before a probe is elected.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "generation": {
+          "description": "Monotonic generation; stale callbacks compare against this.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "leaderThreadId": {
+          "description": "Thread ID of the elected revalidation leader, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limitId": {
+          "description": "Limit identifier, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "manualRetryRequested": {
+          "description": "Whether a manual retry has been requested and is pending election.",
+          "type": "boolean"
+        },
+        "manualWaitReason": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UsageLimitManualWaitReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why manual wait was entered, if applicable."
+        },
+        "maxAutoResumes": {
+          "description": "Maximum automatic resumes allowed.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "maxAvailabilityChecks": {
+          "description": "Maximum unknown-reset probes allowed.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "nextCheckAt": {
+          "description": "Next scheduled check time (Unix seconds), if any.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "parkedThreadIds": {
+          "description": "Thread IDs registered as parked.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "phase": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/UsageLimitWaitPhase"
+            }
+          ],
+          "description": "Current phase."
+        },
+        "resetAt": {
+          "description": "Known reset timestamp (Unix seconds), if available.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "triggerThreadId": {
+          "description": "The thread that triggered the wait.",
+          "type": "string"
+        },
+        "triggerTurnId": {
+          "description": "The turn that triggered the wait.",
+          "type": "string"
+        },
+        "unknownResetMaxWaitSeconds": {
+          "description": "Maximum unknown-reset wait in seconds.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "unknownResetWaitStartedAt": {
+          "description": "When the first unknown-reset probe was issued (Unix seconds), if any.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "workId": {
+          "description": "The causal work ID (root turn ID).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "autoResumeEnabled",
+        "automaticResumesUsed",
+        "availabilityChecksUsed",
+        "classification",
+        "expectedParticipants",
+        "generation",
+        "manualRetryRequested",
+        "maxAutoResumes",
+        "maxAvailabilityChecks",
+        "parkedThreadIds",
+        "phase",
+        "triggerThreadId",
+        "triggerTurnId",
+        "unknownResetMaxWaitSeconds",
+        "workId"
+      ],
+      "type": "object"
+    },
+    "UsageLimitWaitPhase": {
+      "description": "Phase of a usage-limit wait.",
+      "oneOf": [
+        {
+          "description": "Work is queued before any execution effect.",
+          "enum": [
+            "queued"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Work is transitioning to suspended after effects were observed.",
+          "enum": [
+            "suspending"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Work is suspended after effects were observed.",
+          "enum": [
+            "suspended"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A leader probe is in flight to revalidate capacity.",
+          "enum": [
+            "revalidating"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Capacity was admitted; parked agents are resuming.",
+          "enum": [
+            "resuming"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Automatic probing is exhausted; manual retry is required.",
+          "enum": [
+            "manualWait"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A non-recoverable issue requires user attention.",
+          "enum": [
+            "attentionRequired"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The wait was cancelled.",
+          "enum": [
+            "cancelled"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "UserInput": {
       "oneOf": [

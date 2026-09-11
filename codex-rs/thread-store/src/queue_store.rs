@@ -3,7 +3,9 @@ use std::future::Future;
 
 use codex_protocol::ThreadId;
 use codex_rollout::StateDbHandle;
+use codex_state::DueHead;
 use codex_state::QueuedUserSubmissionRecord;
+use codex_state::RescheduleParams;
 use codex_state::SqliteQueueStore;
 
 use crate::MAX_QUEUE_ITEMS;
@@ -28,6 +30,14 @@ pub trait QueueStore: Send + Sync {
         payload: String,
     ) -> ThreadStoreFuture<'_, QueuedUserSubmissionRecord>;
 
+    /// Enqueue a payload with an explicit `not_before_ms` scheduling deadline.
+    fn enqueue_with_not_before(
+        &self,
+        thread_id: ThreadId,
+        payload: String,
+        not_before_ms: i64,
+    ) -> ThreadStoreFuture<'_, QueuedUserSubmissionRecord>;
+
     fn list_page(
         &self,
         thread_id: ThreadId,
@@ -49,6 +59,52 @@ pub trait QueueStore: Send + Sync {
     /// Returns [`ThreadStoreError::InvalidRequest`] when `item_ids` is not a
     /// permutation of the complete queue.
     fn reorder(&self, thread_id: ThreadId, item_ids: Vec<String>) -> ThreadStoreFuture<'_, ()>;
+
+    // --- Scheduling operations ---
+
+    /// List head items across all threads that are due for dispatch.
+    fn list_due_heads(&self, now_ms: i64, limit: usize) -> ThreadStoreFuture<'_, Vec<DueHead>>;
+
+    /// Atomically claim a pending/blocked item for dispatch.
+    fn claim_lease(
+        &self,
+        item_id: String,
+        worker_id: String,
+        now_ms: i64,
+        lease_duration_ms: i64,
+    ) -> ThreadStoreFuture<'_, Option<QueuedUserSubmissionRecord>>;
+
+    /// Renew an existing lease.
+    fn renew_lease(
+        &self,
+        item_id: String,
+        worker_id: String,
+        now_ms: i64,
+        lease_duration_ms: i64,
+    ) -> ThreadStoreFuture<'_, bool>;
+
+    /// Acknowledge a leased item (delete after successful dispatch).
+    fn acknowledge(&self, item_id: String, worker_id: String) -> ThreadStoreFuture<'_, bool>;
+
+    /// Reschedule a leased item with new scheduling metadata.
+    fn reschedule(
+        &self,
+        item_id: String,
+        worker_id: String,
+        now_ms: i64,
+        params: RescheduleParams,
+    ) -> ThreadStoreFuture<'_, Option<QueuedUserSubmissionRecord>>;
+
+    /// Release a lease, returning the item to pending state.
+    fn release_lease(
+        &self,
+        item_id: String,
+        worker_id: String,
+        now_ms: i64,
+    ) -> ThreadStoreFuture<'_, bool>;
+
+    /// Reset all expired leases back to pending.
+    fn recover_expired_leases(&self, now_ms: i64) -> ThreadStoreFuture<'_, u64>;
 }
 
 /// Adapts the local state runtime to the shared queue-storage interface.
@@ -116,6 +172,29 @@ impl QueueStore for LocalQueueStore {
         })
     }
 
+    fn enqueue_with_not_before(
+        &self,
+        thread_id: ThreadId,
+        payload: String,
+        not_before_ms: i64,
+    ) -> ThreadStoreFuture<'_, QueuedUserSubmissionRecord> {
+        Box::pin(async move {
+            self.queue()
+                .enqueue_with_not_before(thread_id, &payload, not_before_ms)
+                .await
+                .map_err(|error| match error.downcast_ref::<sqlx::Error>() {
+                    Some(sqlx::Error::RowNotFound) => ThreadStoreError::InvalidRequest {
+                        message: format!(
+                            "queue cannot contain more than {MAX_QUEUE_ITEMS} submissions"
+                        ),
+                    },
+                    _ => ThreadStoreError::Internal {
+                        message: format!("queue storage failed: {error}"),
+                    },
+                })
+        })
+    }
+
     fn list_page(
         &self,
         thread_id: ThreadId,
@@ -154,5 +233,91 @@ impl QueueStore for LocalQueueStore {
                     },
                 })
         })
+    }
+
+    fn list_due_heads(&self, now_ms: i64, limit: usize) -> ThreadStoreFuture<'_, Vec<DueHead>> {
+        queue_future(self.queue().list_due_heads(now_ms, limit))
+    }
+
+    fn claim_lease(
+        &self,
+        item_id: String,
+        worker_id: String,
+        now_ms: i64,
+        lease_duration_ms: i64,
+    ) -> ThreadStoreFuture<'_, Option<QueuedUserSubmissionRecord>> {
+        Box::pin(async move {
+            self.queue()
+                .claim_lease(&item_id, &worker_id, now_ms, lease_duration_ms)
+                .await
+                .map_err(|error| ThreadStoreError::Internal {
+                    message: format!("queue storage failed: {error}"),
+                })
+        })
+    }
+
+    fn renew_lease(
+        &self,
+        item_id: String,
+        worker_id: String,
+        now_ms: i64,
+        lease_duration_ms: i64,
+    ) -> ThreadStoreFuture<'_, bool> {
+        Box::pin(async move {
+            self.queue()
+                .renew_lease(&item_id, &worker_id, now_ms, lease_duration_ms)
+                .await
+                .map_err(|error| ThreadStoreError::Internal {
+                    message: format!("queue storage failed: {error}"),
+                })
+        })
+    }
+
+    fn acknowledge(&self, item_id: String, worker_id: String) -> ThreadStoreFuture<'_, bool> {
+        Box::pin(async move {
+            self.queue()
+                .acknowledge(&item_id, &worker_id)
+                .await
+                .map_err(|error| ThreadStoreError::Internal {
+                    message: format!("queue storage failed: {error}"),
+                })
+        })
+    }
+
+    fn reschedule(
+        &self,
+        item_id: String,
+        worker_id: String,
+        now_ms: i64,
+        params: RescheduleParams,
+    ) -> ThreadStoreFuture<'_, Option<QueuedUserSubmissionRecord>> {
+        Box::pin(async move {
+            self.queue()
+                .reschedule(&item_id, &worker_id, now_ms, params)
+                .await
+                .map_err(|error| ThreadStoreError::Internal {
+                    message: format!("queue storage failed: {error}"),
+                })
+        })
+    }
+
+    fn release_lease(
+        &self,
+        item_id: String,
+        worker_id: String,
+        now_ms: i64,
+    ) -> ThreadStoreFuture<'_, bool> {
+        Box::pin(async move {
+            self.queue()
+                .release_lease(&item_id, &worker_id, now_ms)
+                .await
+                .map_err(|error| ThreadStoreError::Internal {
+                    message: format!("queue storage failed: {error}"),
+                })
+        })
+    }
+
+    fn recover_expired_leases(&self, now_ms: i64) -> ThreadStoreFuture<'_, u64> {
+        queue_future(self.queue().recover_expired_leases(now_ms))
     }
 }

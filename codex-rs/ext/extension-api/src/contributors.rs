@@ -37,6 +37,8 @@ pub use prompt::PromptFragment;
 pub use prompt::PromptSlot;
 pub use skill_invocation::SkillInvocationInput;
 pub use skill_invocation::SkillInvocationKind;
+pub use thread_lifecycle::SuspendedMemberInfo;
+pub use thread_lifecycle::SuspendedReplaySafety;
 pub use thread_lifecycle::ThreadIdleCause;
 pub use thread_lifecycle::ThreadIdleInput;
 pub use thread_lifecycle::ThreadOriginator;
@@ -44,6 +46,7 @@ pub use thread_lifecycle::ThreadReadyInput;
 pub use thread_lifecycle::ThreadResumeInput;
 pub use thread_lifecycle::ThreadStartInput;
 pub use thread_lifecycle::ThreadStopInput;
+pub use thread_lifecycle::TurnSuspendedInput;
 pub use tool_lifecycle::McpToolContext;
 pub use tool_lifecycle::McpToolResultInput;
 pub use tool_lifecycle::McpToolSource;
@@ -172,6 +175,19 @@ pub trait ThreadLifecycleContributor<C: Sync>: Send + Sync {
 
     /// Called before the host drops the thread runtime and thread-scoped store.
     fn on_thread_stop<'a>(&'a self, input: ThreadStopInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let _self = self;
+            let _input = input;
+        })
+    }
+
+    /// Called after the host suspends an unfinished turn for durable
+    /// usage-limit hand-off.
+    ///
+    /// The queue extension enqueues a `SuspendedTreeRecoveryManifest`
+    /// so a replacement process can recover the turn after the reset
+    /// window elapses.
+    fn on_turn_suspended<'a>(&'a self, input: TurnSuspendedInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             let _self = self;
             let _input = input;

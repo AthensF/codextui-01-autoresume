@@ -5755,6 +5755,53 @@
         }
       ]
     },
+    "UsageLimitsToml": {
+      "additionalProperties": false,
+      "description": "Usage-limit queueing and auto-resume settings loaded from config.toml.",
+      "properties": {
+        "auto_resume": {
+          "description": "When `true`, suspended work is automatically revalidated after the reset deadline. Defaults to `true`.",
+          "type": "boolean"
+        },
+        "max_auto_resumes": {
+          "description": "Maximum number of usage-window crossings that may be automatically resumed. Defaults to `1`. `0` permits queue/suspend visibility and manual retry but no automatic crossing.",
+          "format": "uint32",
+          "maximum": 100.0,
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max_availability_checks": {
+          "description": "Maximum number of availability probes for unknown-reset 429s before transitioning to manual wait. Defaults to `6`.",
+          "format": "uint32",
+          "maximum": 100.0,
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "queue_when_limited": {
+          "description": "When `true`, submissions are queued locally when an authoritative account snapshot says ordinary usage is unavailable. Defaults to `true`.",
+          "type": "boolean"
+        },
+        "unknown_reset_base_delay_seconds": {
+          "description": "Base delay in seconds for the first unknown-reset probe and the exponential base for subsequent probes. Defaults to `60` (1 minute).",
+          "format": "uint64",
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "unknown_reset_max_interval_seconds": {
+          "description": "Maximum interval in seconds between unknown-reset probes. Defaults to `1800` (30 minutes).",
+          "format": "uint64",
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "unknown_reset_max_wait_seconds": {
+          "description": "Wall-clock ceiling in seconds for unknown-reset probing, measured from the first probe. Defaults to `7200` (2 hours).",
+          "format": "uint64",
+          "minimum": 1.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "Verbosity": {
       "description": "Controls output length/detail on GPT-5 models via the Responses API. Serialized with lowercase values to match the OpenAI API.",
       "enum": [
@@ -6928,6 +6975,14 @@
         }
       ],
       "description": "Collection of settings that are specific to the TUI."
+    },
+    "usage_limits": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/UsageLimitsToml"
+        }
+      ],
+      "description": "Usage-limit queueing and auto-resume settings."
     },
     "web_search": {
       "allOf": [

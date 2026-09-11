@@ -101,4 +101,33 @@ impl Session {
                 .await;
         }
     }
+
+    /// Notifies extensions that a turn was suspended for durable hand-off.
+    ///
+    /// The queue extension enqueues a `SuspendedTreeRecoveryManifest` so a
+    /// replacement process can recover the turn after `not_before_ms`.
+    pub(crate) async fn emit_turn_suspended_lifecycle(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        not_before_ms: i64,
+        members: &[codex_extension_api::SuspendedMemberInfo],
+        coordinator_generation: u64,
+        replay_safety: &codex_extension_api::SuspendedReplaySafety,
+    ) {
+        for contributor in self.services.extensions.thread_lifecycle_contributors() {
+            contributor
+                .on_turn_suspended(codex_extension_api::TurnSuspendedInput {
+                    thread_id,
+                    turn_id,
+                    not_before_ms,
+                    members,
+                    coordinator_generation,
+                    replay_safety,
+                    session_store: &self.services.session_extension_data,
+                    thread_store: &self.services.thread_extension_data,
+                })
+                .await;
+        }
+    }
 }

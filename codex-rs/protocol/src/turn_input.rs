@@ -1,5 +1,6 @@
 //! Turn-input request and result types shared by Core's submission APIs.
 
+use crate::ThreadId;
 use crate::models::ResponseItem;
 use crate::protocol::AdditionalContextEntry;
 use crate::protocol::InterAgentCommunication;
@@ -25,6 +26,12 @@ pub enum SuspendTurnOutcome {
     /// A currently loaded descendant would remain running after root handoff.
     HasLiveDescendants,
     UnsupportedTask,
+    /// One or more tree members have ambiguous side effects.  Automatic
+    /// recovery is refused; the user must be alerted.
+    AttentionRequired {
+        /// Human-readable description of the ambiguous effects.
+        reason: String,
+    },
 }
 
 /// Input consumed by a regular turn.
@@ -63,6 +70,41 @@ pub struct RecoverTurnRequest {
     pub trace: Option<W3cTraceContext>,
     /// Program recorded in the interrupted turn's persisted context.
     pub cyber_access_program: Option<CyberAccessProgram>,
+}
+
+/// Request to recover a suspended agent tree.
+///
+/// The root thread is recovered first, then descendants in parent-first
+/// order, preserving original turn IDs, root-turn metadata, agent paths,
+/// and shared `AgentControl`.
+#[derive(Clone, Debug)]
+pub struct TreeRecoveryRequest {
+    /// The root thread's turn ID to resume.
+    pub root_turn_id: String,
+    /// Thread settings to apply to the root thread.
+    pub thread_settings: ThreadSettingsOverrides,
+    pub trace: Option<W3cTraceContext>,
+    /// Program recorded in the interrupted root turn's persisted context.
+    pub cyber_access_program: Option<CyberAccessProgram>,
+    /// Member threads to recover after the root, in parent-first order.
+    pub members: Vec<TreeMemberRecoveryRequest>,
+}
+
+/// A member thread to recover as part of a tree recovery.
+#[derive(Clone, Debug)]
+pub struct TreeMemberRecoveryRequest {
+    /// The member's thread ID.
+    pub thread_id: ThreadId,
+    /// The turn ID to resume on this member.
+    pub turn_id: String,
+    /// Parent thread ID in the agent tree.
+    pub parent_thread_id: ThreadId,
+    /// Parent turn ID that spawned this member.
+    pub parent_turn_id: String,
+    /// Root turn ID shared by the entire tree.
+    pub root_turn_id: String,
+    /// Agent path from root to this member (e.g. `"root.child"`).
+    pub agent_path: String,
 }
 
 impl TurnInputRequest {

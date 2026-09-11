@@ -15,9 +15,12 @@ mod thread_metadata_sync;
 mod thread_sections;
 mod types;
 
+pub use codex_state::DueHead;
 pub use codex_state::MAX_QUEUE_ITEMS;
 pub use codex_state::ProjectSortKey;
+pub use codex_state::QueuedItemState;
 pub use codex_state::QueuedUserSubmissionRecord;
+pub use codex_state::RescheduleParams;
 pub use error::ThreadStoreError;
 pub use error::ThreadStoreResult;
 pub use in_memory::InMemoryThreadStore;

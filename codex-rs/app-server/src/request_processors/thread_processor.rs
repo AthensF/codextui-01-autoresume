@@ -511,6 +511,12 @@ impl ThreadRequestProcessor {
         }
     }
 
+    /// Returns a reference to the thread manager for direct thread operations
+    /// (e.g. suspending waiting threads during graceful shutdown).
+    pub(crate) fn thread_manager(&self) -> &Arc<ThreadManager> {
+        &self.thread_manager
+    }
+
     pub(crate) async fn thread_start(
         &self,
         request_id: ConnectionRequestId,

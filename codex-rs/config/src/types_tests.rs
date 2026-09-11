@@ -104,3 +104,66 @@ fn memories_version_selects_pipeline_without_changing_other_defaults() {
     }
     assert!(toml::from_str::<MemoriesToml>("version = \"v3\"").is_err());
 }
+
+#[test]
+fn usage_limits_config_uses_defaults_when_unset() {
+    let parsed: UsageLimitsToml = toml::from_str("").expect("parse empty usage limits config");
+    assert_eq!(
+        UsageLimitsConfig::from(parsed),
+        UsageLimitsConfig::default()
+    );
+}
+
+#[test]
+fn usage_limits_config_applies_explicit_overrides() {
+    let parsed: UsageLimitsToml = toml::from_str(
+        r#"
+            queue_when_limited = false
+            auto_resume = false
+            max_auto_resumes = 3
+            max_availability_checks = 10
+            unknown_reset_base_delay_seconds = 30
+            unknown_reset_max_interval_seconds = 600
+            unknown_reset_max_wait_seconds = 3600
+        "#,
+    )
+    .expect("parse explicit usage limits config");
+    let config = UsageLimitsConfig::from(parsed);
+    assert!(!config.queue_when_limited);
+    assert!(!config.auto_resume);
+    assert_eq!(config.max_auto_resumes, 3);
+    assert_eq!(config.max_availability_checks, 10);
+    assert_eq!(config.unknown_reset_base_delay_seconds, 30);
+    assert_eq!(config.unknown_reset_max_interval_seconds, 600);
+    assert_eq!(config.unknown_reset_max_wait_seconds, 3600);
+}
+
+#[test]
+fn usage_limits_config_clamps_timing_fields_to_minimum_one_second() {
+    let parsed: UsageLimitsToml = toml::from_str(
+        r#"
+            unknown_reset_base_delay_seconds = 0
+            unknown_reset_max_interval_seconds = 0
+            unknown_reset_max_wait_seconds = 0
+        "#,
+    )
+    .expect("parse zeroed usage limits config");
+    let config = UsageLimitsConfig::from(parsed);
+    assert_eq!(config.unknown_reset_base_delay_seconds, 1);
+    assert_eq!(config.unknown_reset_max_interval_seconds, 1);
+    assert_eq!(config.unknown_reset_max_wait_seconds, 1);
+}
+
+#[test]
+fn usage_limits_config_supports_zero_probes_and_zero_resumes() {
+    let parsed: UsageLimitsToml = toml::from_str(
+        r#"
+            max_auto_resumes = 0
+            max_availability_checks = 0
+        "#,
+    )
+    .expect("parse zero caps usage limits config");
+    let config = UsageLimitsConfig::from(parsed);
+    assert_eq!(config.max_auto_resumes, 0);
+    assert_eq!(config.max_availability_checks, 0);
+}

@@ -34,6 +34,7 @@ mod thread;
 mod thread_data;
 mod thread_usage;
 mod turn;
+mod usage_limit;
 mod user_verification;
 mod windows_sandbox;
 
@@ -72,6 +73,7 @@ pub use thread::*;
 pub use thread_data::*;
 pub use thread_usage::*;
 pub use turn::*;
+pub use usage_limit::*;
 pub use user_verification::*;
 pub use windows_sandbox::*;
 

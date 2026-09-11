@@ -3311,6 +3311,33 @@ impl App {
                     self.insert_history_cell(tui, Box::new(cell));
                 }
             }
+            AppEvent::UsageLimitStatusRead { snapshot } => {
+                self.chat_widget.set_usage_limit_snapshot(snapshot);
+            }
+            AppEvent::UsageLimitActionResult { result } => {
+                use codex_app_server_protocol::UsageLimitActionResult;
+                match result {
+                    UsageLimitActionResult::Applied => {
+                        self.chat_widget
+                            .add_error_message("Usage-limit action applied.".to_string());
+                    }
+                    UsageLimitActionResult::StaleGeneration => {
+                        self.chat_widget.add_error_message(
+                            "Usage-limit action ignored: stale generation.".to_string(),
+                        );
+                    }
+                }
+            }
+            AppEvent::RefreshUsageLimitStatus { thread_id } => {
+                self.refresh_usage_limit_status(app_server, thread_id);
+            }
+            AppEvent::SendUsageLimitAction {
+                thread_id,
+                generation,
+                action,
+            } => {
+                self.send_usage_limit_action(app_server, thread_id, generation, action);
+            }
         }
         Ok(AppRunControl::Continue)
     }

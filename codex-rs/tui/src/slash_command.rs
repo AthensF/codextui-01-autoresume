@@ -56,6 +56,8 @@ pub enum SlashCommand {
     #[strum(to_string = "pwd", serialize = "cwd")]
     Pwd,
     Usage,
+    #[strum(serialize = "usage-limit")]
+    UsageLimit,
     DebugConfig,
     Title,
     Statusline,
@@ -116,6 +118,9 @@ impl SlashCommand {
             SlashCommand::Cd => "change the current working directory",
             SlashCommand::Pwd => "show the current working directory",
             SlashCommand::Usage => "view account usage or use a usage limit reset",
+            SlashCommand::UsageLimit => {
+                "view usage-limit wait status and retry, toggle auto-resume, or cancel"
+            }
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
             SlashCommand::Title => "configure which items appear in the terminal title",
             SlashCommand::Statusline => "configure which items appear in the status line",
@@ -266,6 +271,7 @@ impl SlashCommand {
             | SlashCommand::Exit
             | SlashCommand::Side
             | SlashCommand::Btw => true,
+            SlashCommand::UsageLimit => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
             SlashCommand::Agents | SlashCommand::MultiAgents => true,

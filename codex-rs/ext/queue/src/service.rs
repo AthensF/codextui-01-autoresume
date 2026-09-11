@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::OnceLock;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use codex_core::CodexThread;
@@ -17,6 +19,7 @@ use codex_extension_api::ThreadIdleCause;
 use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadResumeInput;
+use codex_extension_api::TurnSuspendedInput;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::snapshot_local_user_input;
@@ -29,6 +32,7 @@ use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::MAX_QUEUE_ITEMS;
 use codex_thread_store::QueueStore;
+use codex_thread_store::QueuedItemState;
 use codex_thread_store::QueuedUserSubmissionRecord;
 use codex_thread_store::ThreadStoreError;
 use thiserror::Error;
@@ -37,11 +41,24 @@ use tokio::sync::OwnedMutexGuard;
 use tokio::sync::broadcast::error::TryRecvError;
 use uuid::Uuid;
 
+use crate::payload::QueuePayload;
+use crate::payload::decode_turn_input;
+
 /// One user message waiting to start on its thread.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueuedItem {
     pub id: String,
     pub input: TurnInput,
+    /// Earliest wall-clock time (epoch ms) the item may be dispatched.
+    pub not_before_ms: i64,
+    /// Current scheduling state.
+    pub state: QueuedItemState,
+    /// Short string describing why the item is blocked, if any.
+    pub block_reason: Option<String>,
+    /// Number of failed dispatch attempts.
+    pub attempt_count: i64,
+    /// Bounded error message from the most recent failure.
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -64,11 +81,32 @@ pub enum QueueServiceError {
 
 #[derive(Clone)]
 pub struct QueuedItemService {
-    queue: Arc<dyn QueueStore>,
-    thread_manager: Weak<ThreadManager>,
-    event_sink: Arc<dyn ExtensionEventSink>,
-    dispatch_locks: Arc<StdMutex<HashMap<ThreadId, Weak<Mutex<()>>>>>,
-    resumed_threads: Arc<StdMutex<HashSet<ThreadId>>>,
+    pub(crate) queue: Arc<dyn QueueStore>,
+    pub(crate) thread_manager: Weak<ThreadManager>,
+    pub(crate) event_sink: Arc<dyn ExtensionEventSink>,
+    pub(crate) thread_loader: Arc<OnceLock<Arc<dyn ThreadLoader>>>,
+    pub(crate) dispatch_locks: Arc<StdMutex<HashMap<ThreadId, Weak<Mutex<()>>>>>,
+    pub(crate) resumed_threads: Arc<StdMutex<HashSet<ThreadId>>>,
+    pub(crate) worker_id: String,
+    pub(crate) claiming_enabled: Arc<AtomicBool>,
+}
+
+/// Loads an unloaded thread so the scheduler can dispatch queued items to it.
+///
+/// Implementations live in the app-server layer, which has access to the
+/// thread store, config, and auth manager needed to resume a thread from
+/// durable history. The queue extension itself remains decoupled from those
+/// app-server concerns.
+pub trait ThreadLoader: Send + Sync + 'static {
+    /// Ensures `thread_id` is loaded and returns its handle.
+    ///
+    /// If the thread is already loaded, returns it directly. If not, reads
+    /// the stored thread, loads initial history, and resumes it through the
+    /// thread manager.
+    fn load_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> futures::future::BoxFuture<'static, Result<Arc<CodexThread>, String>>;
 }
 
 impl QueuedItemService {
@@ -81,9 +119,22 @@ impl QueuedItemService {
             queue,
             thread_manager,
             event_sink,
+            thread_loader: Arc::new(OnceLock::new()),
             dispatch_locks: Arc::new(StdMutex::new(HashMap::new())),
             resumed_threads: Arc::new(StdMutex::new(HashSet::new())),
+            worker_id: Uuid::now_v7().to_string(),
+            claiming_enabled: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// Sets the thread loader used by the scheduler to load unloaded threads.
+    ///
+    /// Returns `Err(loader)` if a loader was already installed.
+    pub fn set_thread_loader(
+        &self,
+        loader: Arc<dyn ThreadLoader>,
+    ) -> Result<(), Arc<dyn ThreadLoader>> {
+        self.thread_loader.set(loader)
     }
 
     // Check SQLite's inexpensive data version every 10 seconds, then use the
@@ -268,7 +319,7 @@ impl QueuedItemService {
         input: TurnInput,
     ) -> Result<QueuedItem, QueueServiceError> {
         let input = prepare_queued_user_input(input).await?;
-        let payload = serde_json::to_string(&input)?;
+        let payload = QueuePayload::user_message(input)?;
         let item = {
             let _dispatch_guard = self.dispatch_guard(thread_id).await;
             let item = queued_item_from_record(self.queue.enqueue(thread_id, payload).await?)?;
@@ -276,6 +327,31 @@ impl QueuedItemService {
             item
         };
         self.wake_if_loaded(thread_id).await;
+        Ok(item)
+    }
+
+    /// Enqueues a durable recovery manifest for a suspended agent tree.
+    ///
+    /// The manifest becomes due at `not_before_ms` (typically the
+    /// usage-limit reset time).  The scheduler dispatches it via
+    /// [`dispatch_suspended_tree_recovery`] when it becomes due.
+    pub async fn enqueue_suspended_tree_recovery(
+        &self,
+        manifest: crate::payload::SuspendedTreeRecoveryManifest,
+    ) -> Result<QueuedItem, QueueServiceError> {
+        let thread_id = manifest.root_thread_id.clone();
+        let not_before_ms = manifest.not_before_ms;
+        let payload = QueuePayload::suspended_tree_recovery(manifest)?;
+        let item = {
+            let _dispatch_guard = self.dispatch_guard(thread_id).await;
+            let record = self
+                .queue
+                .enqueue_with_not_before(thread_id, payload, not_before_ms)
+                .await
+                .map_err(QueueServiceError::from)?;
+            queued_item_from_record(record)?
+        };
+        self.emit_changed(thread_id);
         Ok(item)
     }
 
@@ -314,12 +390,13 @@ impl QueuedItemService {
                     QueuedItem {
                         id,
                         input: TurnInput::UserInput { client_id, .. },
+                        ..
                     } if id == queued_item_id => client_id,
                     _ => None,
                 });
         }
         let input = prepare_queued_user_input(input).await?;
-        let payload = serde_json::to_string(&input)?;
+        let payload = QueuePayload::user_message(input)?;
         let item = self
             .queue
             .update(thread_id, queued_item_id, payload)
@@ -422,8 +499,13 @@ impl QueuedItemService {
             };
             let queued_item_id = record.id.clone();
 
-            let input = match serde_json::from_str::<TurnInput>(&record.payload) {
-                Ok(input) => input,
+            let input = match decode_turn_input(&record.payload) {
+                Ok(Some(input)) => input,
+                Ok(None) => {
+                    tracing::warn!(%queued_item_id, "discarding non-user queued item");
+                    self.delete_locked(thread_id, queued_item_id).await?;
+                    continue;
+                }
                 Err(error) => {
                     tracing::warn!(%queued_item_id, %error, "discarding invalid queued item");
                     self.delete_locked(thread_id, queued_item_id).await?;
@@ -564,13 +646,73 @@ where
             }
         })
     }
+
+    fn on_turn_suspended<'a>(&'a self, input: TurnSuspendedInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let Ok(thread_id) = ThreadId::from_string(input.thread_id) else {
+                tracing::warn!(
+                    thread_id = input.thread_id,
+                    "queue extension received an invalid thread id on turn suspension"
+                );
+                return;
+            };
+            let members = input
+                .members
+                .iter()
+                .map(|m| crate::payload::SuspendedTreeMember {
+                    thread_id: ThreadId::from_string(&m.thread_id)
+                        .unwrap_or_else(|_| ThreadId::default()),
+                    turn_id: m.turn_id.clone(),
+                    parent_thread_id: ThreadId::from_string(&m.parent_thread_id)
+                        .unwrap_or_else(|_| ThreadId::default()),
+                    parent_turn_id: m.parent_turn_id.clone(),
+                    root_turn_id: m.root_turn_id.clone(),
+                    agent_path: m.agent_path.clone(),
+                })
+                .collect::<Vec<_>>();
+            let replay_safety = match input.replay_safety {
+                codex_extension_api::SuspendedReplaySafety::Safe {
+                    verified_tool_calls,
+                } => crate::payload::ReplaySafetySummary::Safe {
+                    verified_tool_calls: *verified_tool_calls,
+                },
+                codex_extension_api::SuspendedReplaySafety::AttentionRequired { reason } => {
+                    crate::payload::ReplaySafetySummary::AttentionRequired {
+                        reason: reason.clone(),
+                    }
+                }
+            };
+            let manifest = crate::payload::SuspendedTreeRecoveryManifest {
+                root_thread_id: thread_id,
+                root_turn_id: input.turn_id.to_string(),
+                original_input: None,
+                members,
+                coordinator_generation: input.coordinator_generation,
+                not_before_ms: input.not_before_ms,
+                replay_safety,
+            };
+            if let Err(error) = self.enqueue_suspended_tree_recovery(manifest).await {
+                tracing::warn!(
+                    thread_id = input.thread_id,
+                    %error,
+                    "failed to enqueue suspended-tree recovery manifest"
+                );
+            }
+        })
+    }
 }
 
 fn queued_item_from_record(
     record: QueuedUserSubmissionRecord,
 ) -> Result<QueuedItem, QueueServiceError> {
+    let input = decode_turn_input(&record.payload)?.ok_or(QueueServiceError::InvalidInput)?;
     Ok(QueuedItem {
         id: record.id,
-        input: serde_json::from_str::<TurnInput>(&record.payload)?,
+        input,
+        not_before_ms: record.not_before_ms,
+        state: record.state,
+        block_reason: record.block_reason,
+        attempt_count: record.attempt_count,
+        last_error: record.last_error,
     })
 }

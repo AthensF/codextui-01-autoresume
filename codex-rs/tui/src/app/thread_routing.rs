@@ -8,6 +8,9 @@ use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
 use crate::app_event::ThreadTitleDestination;
 use crate::chatwidget::ThreadInputStateRestoreMode;
+use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::ThreadQueueAddParams;
+use codex_app_server_protocol::ThreadQueueAddResponse;
 use codex_app_server_protocol::ThreadStartedNotification;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
@@ -886,6 +889,33 @@ impl App {
                             .record_safety_buffering_turn(response.turn.id, op);
                     }
                 }
+                Ok(true)
+            }
+            AppCommand::QueueUserTurn {
+                thread_id: queue_thread_id,
+                client_user_message_id,
+                items,
+            } => {
+                let request_id = app_server.next_request_id();
+                let response = app_server
+                    .request_handle()
+                    .request_typed::<ThreadQueueAddResponse>(ClientRequest::ThreadQueueAdd {
+                        request_id,
+                        params: ThreadQueueAddParams {
+                            thread_id: queue_thread_id.to_string(),
+                            input: items.to_vec(),
+                            client_user_message_id: client_user_message_id.clone(),
+                        },
+                    })
+                    .await
+                    .map_err(|err| {
+                        color_eyre::eyre::eyre!("failed to queue user turn to durable queue: {err}")
+                    })?;
+                tracing::info!(
+                    thread_id = %queue_thread_id,
+                    queued_submission_id = %response.queued_submission.id,
+                    "user turn queued to durable queue while tree is closed by usage limit"
+                );
                 Ok(true)
             }
             AppCommand::ListSkills { cwds, force_reload } => {

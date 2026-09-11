@@ -55,6 +55,7 @@ use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
 use codex_config::types::UriBasedFileOpener;
+use codex_config::types::UsageLimitsConfig;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_core_plugins::PluginLoadOutcome;
 use codex_core_plugins::PluginsConfigInput;
@@ -1104,6 +1105,9 @@ pub struct Config {
 
     /// OTEL configuration (exporter type, endpoint, headers, etc.).
     pub otel: codex_config::types::OtelConfig,
+
+    /// Usage-limit queueing and auto-resume settings.
+    pub usage_limits: UsageLimitsConfig,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -3431,6 +3435,12 @@ impl Config {
         let memories_config: MemoriesConfig = cfg.memories.clone().unwrap_or_default().into();
         let memories_root = codex_home.join(memories_config.version.directory_name());
 
+        let usage_limits_config: UsageLimitsConfig = cfg
+            .usage_limits
+            .clone()
+            .unwrap_or_default()
+            .into();
+
         let profiles_are_active = effective_permission_selection.profiles_are_active(
             default_permissions_override.as_deref(),
             permission_config_syntax,
@@ -4428,6 +4438,7 @@ impl Config {
                 .map(|t| t.keymap.clone())
                 .unwrap_or_default(),
             otel,
+            usage_limits: usage_limits_config,
         };
         Ok(config)
         })

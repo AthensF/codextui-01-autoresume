@@ -397,6 +397,64 @@ impl CodexThread {
         }
     }
 
+    /// Recovers a suspended agent tree parent-first.
+    ///
+    /// The root thread is recovered first, then each descendant in
+    /// parent-first order, preserving original turn IDs, root-turn
+    /// metadata, agent paths, and shared `AgentControl`.
+    ///
+    /// Descendant threads that are not currently loaded are skipped; the
+    /// caller is responsible for loading them before calling this method
+    /// or handling their recovery separately.
+    pub async fn recover_tree(
+        &self,
+        request: codex_protocol::turn_input::TreeRecoveryRequest,
+    ) -> CodexResult<StartIfIdleSubmission> {
+        let codex_protocol::turn_input::TreeRecoveryRequest {
+            root_turn_id,
+            thread_settings,
+            trace,
+            cyber_access_program,
+            members,
+        } = request;
+
+        // Recover the root thread first.
+        let root_result = self
+            .recover_turn_if_idle(codex_protocol::turn_input::RecoverTurnRequest {
+                turn_id: root_turn_id,
+                thread_settings,
+                trace: trace.clone(),
+                cyber_access_program,
+            })
+            .await?;
+
+        // Recover descendants in parent-first order.
+        for member in &members {
+            let Some(state) = self.session.services.agent_control.upgrade_manager_state() else {
+                continue;
+            };
+            let Ok(thread) = state.get_thread(member.thread_id.clone()).await else {
+                // Member not loaded; skip it. The caller or a later
+                // recovery pass can handle unloaded members.
+                tracing::warn!(
+                    thread_id = %member.thread_id,
+                    "skipping unloaded tree member during recovery"
+                );
+                continue;
+            };
+            let _ = thread
+                .recover_turn_if_idle(codex_protocol::turn_input::RecoverTurnRequest {
+                    turn_id: member.turn_id.clone(),
+                    thread_settings: codex_protocol::protocol::ThreadSettingsOverrides::default(),
+                    trace: trace.clone(),
+                    cyber_access_program: None,
+                })
+                .await;
+        }
+
+        Ok(root_result)
+    }
+
     /// Stops the active unfinished root turn without recording TurnAborted or
     /// TurnComplete, so another worker can recover its original turn ID.
     ///
@@ -408,7 +466,10 @@ impl CodexThread {
     /// The session processes an accepted request even if its caller disconnects.
     /// Callers must not transfer ownership until suspension succeeds, which
     /// requires stopping execution, flushing history, and closing its writer.
-    pub async fn suspend_turn_and_shutdown(&self) -> CodexResult<SuspendTurnOutcome> {
+    pub async fn suspend_turn_and_shutdown(
+        &self,
+        /*not_before_ms*/ not_before_ms: i64,
+    ) -> CodexResult<SuspendTurnOutcome> {
         if self.session_source.is_non_root_agent() {
             return Err(CodexErr::UnsupportedOperation(
                 "turn suspension requires the owning root thread".to_string(),
@@ -422,7 +483,10 @@ impl CodexThread {
             .tx_sub
             .send(Submission {
                 id: new_submission_id(),
-                op: Op::SuspendTurnAndShutdown { reply },
+                op: Op::SuspendTurnAndShutdown {
+                    not_before_ms,
+                    reply,
+                },
                 trace: current_span_w3c_trace_context(),
                 parent_turn_id: None,
                 root_turn_id: None,
@@ -432,6 +496,51 @@ impl CodexThread {
         let outcome = result
             .await
             .map_err(|_| CodexErr::Fatal("thread suspension reply was lost".to_string()))??;
+        if matches!(&outcome, SuspendTurnOutcome::Suspended { .. }) {
+            self.io.session_loop_termination.clone().await;
+        }
+        Ok(outcome)
+    }
+
+    /// Suspend the entire agent tree (root + live descendants) and shut down.
+    ///
+    /// This is the tree-level counterpart of [`suspend_turn_and_shutdown`].
+    /// It seals the tree admission barrier, checks every live member's
+    /// continuation safety, flushes and shuts down descendants child-first,
+    /// and then suspends the root.  The recovery manifest captures real
+    /// member relationships, coordinator generation, and replay-safety data.
+    ///
+    /// Returns [`SuspendTurnOutcome::AttentionRequired`] if any member has
+    /// ambiguous side effects; the barrier is unsealed in that case so the
+    /// session can continue.
+    pub async fn suspend_tree_and_shutdown(
+        &self,
+        /*not_before_ms*/ not_before_ms: i64,
+    ) -> CodexResult<SuspendTurnOutcome> {
+        if self.session_source.is_non_root_agent() {
+            return Err(CodexErr::UnsupportedOperation(
+                "tree suspension requires the owning root thread".to_string(),
+            ));
+        }
+
+        let (reply, result) = oneshot::channel();
+        self.io
+            .tx_sub
+            .send(Submission {
+                id: new_submission_id(),
+                op: Op::SuspendTreeAndShutdown {
+                    not_before_ms,
+                    reply,
+                },
+                trace: current_span_w3c_trace_context(),
+                parent_turn_id: None,
+                root_turn_id: None,
+            })
+            .await
+            .map_err(|_| CodexErr::Fatal("thread session has stopped".to_string()))?;
+        let outcome = result
+            .await
+            .map_err(|_| CodexErr::Fatal("tree suspension reply was lost".to_string()))??;
         if matches!(&outcome, SuspendTurnOutcome::Suspended { .. }) {
             self.io.session_loop_termination.clone().await;
         }
@@ -998,5 +1107,41 @@ impl CodexThread {
             elicitations.registration = None;
         }
         Ok(elicitations.count)
+    }
+
+    /// Returns the current usage-limit coordinator snapshot, or `None` if
+    /// no wait is active.
+    pub async fn usage_limit_snapshot(&self) -> Option<codex_usage_limits::WaitSnapshot> {
+        self.session
+            .services
+            .agent_control
+            .usage_limit_coordinator()
+            .snapshot()
+            .await
+    }
+
+    /// Subscribes to usage-limit coordinator snapshot changes.
+    pub fn usage_limit_subscribe(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Option<codex_usage_limits::WaitSnapshot>> {
+        self.session
+            .services
+            .agent_control
+            .usage_limit_coordinator()
+            .subscribe()
+    }
+
+    /// Applies a usage-limit action to the current wait generation.
+    pub async fn usage_limit_apply_action(
+        &self,
+        generation: u64,
+        action: codex_usage_limits::WaitAction,
+    ) -> codex_usage_limits::ActionResult {
+        self.session
+            .services
+            .agent_control
+            .usage_limit_coordinator()
+            .apply_action(generation, action)
+            .await
     }
 }

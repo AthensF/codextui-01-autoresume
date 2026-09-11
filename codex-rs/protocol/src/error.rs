@@ -68,9 +68,50 @@ pub enum SandboxErr {
     LandlockRestrict,
 }
 
+/// Classification of a waitable usage-limit encounter for scheduling purposes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UsageLimitRecoveryKind {
+    /// An account usage window is exhausted (e.g. `usage_limit_reached`).
+    UsageWindow,
+    /// A transient rate limit received inside the response stream.
+    TransientRateLimit,
+    /// A generic HTTP 429 without a recognised body shape.
+    GenericTooManyRequests,
+}
+
+/// Structured scheduling metadata attached to a waitable usage-limit error.
+///
+/// This is a non-wire internal type that travels alongside [`CodexErr`] so that
+/// the tree coordinator can schedule revalidation without re-parsing the
+/// original HTTP response. It does not change the semantic error category
+/// exposed through [`CodexErrorInfo`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageLimitRecoveryHint {
+    pub kind: UsageLimitRecoveryKind,
+    pub http_status_code: Option<u16>,
+    pub resets_at: Option<DateTime<Utc>>,
+    pub retry_after: Option<Duration>,
+    pub rate_limits: Option<Box<RateLimitSnapshot>>,
+    pub limit_id: Option<String>,
+}
+
+impl UsageLimitRecoveryHint {
+    pub fn new(kind: UsageLimitRecoveryKind) -> Self {
+        Self {
+            kind,
+            http_status_code: None,
+            resets_at: None,
+            retry_after: None,
+            rate_limits: None,
+            limit_id: None,
+        }
+    }
+}
+
 pub struct CodexErr {
     details: CodexErrorDetails,
     retry_delay: Option<Duration>,
+    usage_limit_recovery_hint: Option<UsageLimitRecoveryHint>,
 }
 
 /// The semantic category and diagnostic payload for a [`CodexErr`].
@@ -226,6 +267,7 @@ impl From<CodexErrorDetails> for CodexErr {
         Self {
             details,
             retry_delay: None,
+            usage_limit_recovery_hint: None,
         }
     }
 }
@@ -290,6 +332,7 @@ macro_rules! codex_err_unit_constructors {
             pub const $variant: Self = Self {
                 details: CodexErrorDetails::$variant,
                 retry_delay: None,
+                usage_limit_recovery_hint: None,
             };
         )*
     };
@@ -369,6 +412,24 @@ impl CodexErr {
         &self.details
     }
 
+    pub fn retry_delay(&self) -> Option<Duration> {
+        self.retry_delay
+    }
+
+    pub fn with_retry_delay(mut self, retry_delay: Duration) -> Self {
+        self.retry_delay = Some(retry_delay);
+        self
+    }
+
+    pub fn usage_limit_recovery_hint(&self) -> Option<&UsageLimitRecoveryHint> {
+        self.usage_limit_recovery_hint.as_ref()
+    }
+
+    pub fn with_usage_limit_recovery_hint(mut self, hint: UsageLimitRecoveryHint) -> Self {
+        self.usage_limit_recovery_hint = Some(hint);
+        self
+    }
+
     pub fn is_retryable(&self) -> bool {
         match self.details() {
             CodexErrorDetails::TurnAborted
@@ -410,15 +471,6 @@ impl CodexErr {
             #[cfg(target_os = "linux")]
             CodexErrorDetails::LandlockRuleset(_) | CodexErrorDetails::LandlockPathFd(_) => false,
         }
-    }
-
-    pub fn retry_delay(&self) -> Option<Duration> {
-        self.retry_delay
-    }
-
-    pub fn with_retry_delay(mut self, retry_delay: Duration) -> Self {
-        self.retry_delay = Some(retry_delay);
-        self
     }
 
     /// Minimal shim so that existing `e.downcast_ref::<CodexErr>()` checks continue to compile

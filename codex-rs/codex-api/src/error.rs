@@ -28,6 +28,7 @@ pub enum ApiError {
     RateLimitExceeded {
         message: String,
         delay: Option<Duration>,
+        resets_at: Option<i64>,
     },
     #[error("rate limit: {0}")]
     RateLimit(String),

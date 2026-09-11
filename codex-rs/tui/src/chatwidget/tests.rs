@@ -279,6 +279,8 @@ mod status_command_tests;
 mod status_surface_previews;
 mod terminal_title;
 mod usage;
+#[path = "tests/usage_limit_tests.rs"]
+mod usage_limit_tests;
 #[path = "tests/worktree_picker_tests.rs"]
 mod worktree_picker;
 

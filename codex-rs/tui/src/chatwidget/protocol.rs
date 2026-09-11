@@ -343,6 +343,9 @@ impl ChatWidget {
             | ServerNotification::ProjectChanged(_)
             | ServerNotification::ThreadProjectUpdated(_) => {}
             ServerNotification::ContextCompacted(_) => {}
+            ServerNotification::ThreadUsageLimitUpdated(notification) => {
+                self.handle_usage_limit_updated(notification);
+            }
         }
         // Tool and hook activity can recreate a hidden row with its default
         // heading. Restore the selected status before that row is rendered.

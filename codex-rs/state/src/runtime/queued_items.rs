@@ -8,7 +8,7 @@ use uuid::Uuid;
 /// SQLite-backed persistence for durable, thread-scoped user messages.
 #[derive(Clone)]
 pub struct SqliteQueueStore {
-    pool: Arc<SqlitePool>,
+    pub(crate) pool: Arc<SqlitePool>,
     change_version_connection: Arc<Mutex<Option<SqliteConnection>>>,
 }
 
@@ -83,13 +83,15 @@ impl SqliteQueueStore {
         let row = sqlx::query(
             "INSERT INTO queued_items (
                 id, thread_id, payload_json, queue_order,
-                created_at_ms, updated_at_ms
+                created_at_ms, updated_at_ms,
+                not_before_ms, state, attempt_count, lease_expiry_ms
              )
              SELECT ?, ?, ?,
                     COALESCE((SELECT MAX(queue_order) FROM queued_items WHERE thread_id = ?), -1) + 1,
-                    ?, ?
+                    ?, ?,
+                    0, 'pending', 0, 0
              WHERE (SELECT COUNT(*) FROM queued_items WHERE thread_id = ?) < ?
-             RETURNING id, thread_id, payload_json",
+             RETURNING id, thread_id, payload_json, not_before_ms, state, block_reason, attempt_count, lease_owner, lease_expiry_ms, last_error",
         )
         .bind(Uuid::now_v7().to_string())
         .bind(thread_id.to_string())
@@ -104,6 +106,45 @@ impl SqliteQueueStore {
         QueuedUserSubmissionRecord::try_from_row(&row)
     }
 
+    /// Enqueues a payload with an explicit `not_before_ms` scheduling deadline.
+    ///
+    /// Used by the durable recovery path to enqueue a
+    /// `SuspendedTreeRecoveryManifest` that becomes due only after the
+    /// usage-limit reset window elapses.
+    pub async fn enqueue_with_not_before(
+        &self,
+        thread_id: ThreadId,
+        payload_json: &str,
+        not_before_ms: i64,
+    ) -> anyhow::Result<QueuedUserSubmissionRecord> {
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let row = sqlx::query(
+            "INSERT INTO queued_items (
+                id, thread_id, payload_json, queue_order,
+                created_at_ms, updated_at_ms,
+                not_before_ms, state, attempt_count, lease_expiry_ms
+             )
+             SELECT ?, ?, ?,
+                    COALESCE((SELECT MAX(queue_order) FROM queued_items WHERE thread_id = ?), -1) + 1,
+                    ?, ?,
+                    ?, 'pending', 0, 0
+             WHERE (SELECT COUNT(*) FROM queued_items WHERE thread_id = ?) < ?
+             RETURNING id, thread_id, payload_json, not_before_ms, state, block_reason, attempt_count, lease_owner, lease_expiry_ms, last_error",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(thread_id.to_string())
+        .bind(payload_json)
+        .bind(thread_id.to_string())
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(not_before_ms)
+        .bind(thread_id.to_string())
+        .bind(i64::try_from(MAX_QUEUE_ITEMS)?)
+        .fetch_one(self.pool.as_ref())
+        .await?;
+        QueuedUserSubmissionRecord::try_from_row(&row)
+    }
+
     pub async fn list_page(
         &self,
         thread_id: ThreadId,
@@ -111,7 +152,7 @@ impl SqliteQueueStore {
         limit: usize,
     ) -> anyhow::Result<Vec<QueuedUserSubmissionRecord>> {
         let rows = sqlx::query(
-            "SELECT id, thread_id, payload_json
+            "SELECT id, thread_id, payload_json, not_before_ms, state, block_reason, attempt_count, lease_owner, lease_expiry_ms, last_error
              FROM queued_items
              WHERE thread_id = ?
              ORDER BY queue_order LIMIT ? OFFSET ?",
@@ -136,7 +177,7 @@ impl SqliteQueueStore {
             "UPDATE queued_items
              SET payload_json = ?, updated_at_ms = ?
              WHERE thread_id = ? AND id = ?
-             RETURNING id, thread_id, payload_json",
+             RETURNING id, thread_id, payload_json, not_before_ms, state, block_reason, attempt_count, lease_owner, lease_expiry_ms, last_error",
         )
         .bind(payload_json)
         .bind(datetime_to_epoch_millis(Utc::now()))

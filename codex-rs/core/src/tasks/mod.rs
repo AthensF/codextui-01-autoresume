@@ -614,6 +614,29 @@ impl Session {
         turn_context
             .turn_metadata_state
             .cancel_git_enrichment_task();
+        // Clear the usage-limit coordinator work record for this causal turn.
+        // This is the true causal completion/abort point — the work record
+        // persists across retries and model requests within the turn, and
+        // is only cleared when the turn itself terminates.
+        {
+            let work_id = crate::session::usage_limit_recovery::derive_work_id(
+                turn_context.turn_metadata_state.root_turn_id(),
+                &turn_context.sub_id,
+            );
+            let coordinator = self.services.agent_control.usage_limit_coordinator();
+            // Remove this thread from the expected/parked participant sets
+            // so its completion does not block probe election for the
+            // remaining tree members.
+            if let Some(snapshot) = coordinator.snapshot().await {
+                coordinator
+                    .remove_participant(snapshot.generation, &self.thread_id.to_string())
+                    .await;
+            }
+            coordinator.finish_work(&work_id).await;
+            // Unseal the tree barrier if it was sealed — the causal turn
+            // has completed or aborted, so no further coordination is needed.
+            self.services.agent_control.tree_barrier().unseal();
+        }
 
         let turn_state = {
             let mut active = self.active_turn.lock().await;

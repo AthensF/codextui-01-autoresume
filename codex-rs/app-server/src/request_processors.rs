@@ -567,6 +567,7 @@ mod thread_queue_processor;
 mod thread_sections;
 mod token_usage_replay;
 mod turn_processor;
+mod usage_limit_processor;
 mod windows_sandbox_processor;
 
 pub(crate) use account_processor::AccountRequestProcessor;
@@ -593,6 +594,7 @@ pub(crate) use thread_goal_processor::ThreadGoalRequestProcessor;
 pub(crate) use thread_processor::ThreadRequestProcessor;
 pub(crate) use thread_queue_processor::ThreadQueueRequestProcessor;
 pub(crate) use turn_processor::TurnRequestProcessor;
+pub(crate) use usage_limit_processor::UsageLimitRequestProcessor;
 pub(crate) use windows_sandbox_processor::WindowsSandboxRequestProcessor;
 
 use crate::error_code::internal_error;

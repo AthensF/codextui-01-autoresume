@@ -607,6 +607,11 @@ impl AgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<LiveAgent> {
+        // Acquire the tree admission barrier before spawning. If any agent
+        // in the tree has encountered a waitable usage limit, this blocks
+        // until the barrier reopens, preventing new children from slipping
+        // through while the tree is suspending.
+        self.tree_barrier.acquire(CancellationToken::new()).await;
         let state = self.upgrade()?;
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(

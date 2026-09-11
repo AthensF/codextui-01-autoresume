@@ -839,6 +839,9 @@ pub(crate) async fn record_additional_contexts(
 
     sess.record_conversation_items(turn_context, developer_messages.as_slice())
         .await;
+    // Mark that a completed hook effect has been applied that mutates
+    // context, so usage-limit recovery knows side effects have occurred.
+    turn_context.execution_progress.record_hook_effect_applied();
 }
 
 fn additional_context_messages(additional_contexts: Vec<String>) -> Vec<ResponseItem> {

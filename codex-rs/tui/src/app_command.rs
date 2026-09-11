@@ -132,6 +132,14 @@ pub(crate) enum AppCommand {
         collaboration_mode: Option<CollaborationMode>,
         personality: Option<Personality>,
     },
+    /// Enqueue a user turn to the durable queue when the tree is closed
+    /// due to a usage limit. The durable queue scheduler will dispatch
+    /// the message when availability returns.
+    QueueUserTurn {
+        thread_id: ThreadId,
+        client_user_message_id: String,
+        items: Vec<UserInput>,
+    },
     OverrideTurnContext {
         cwd: Option<PathBuf>,
         approval_policy: Option<AskForApproval>,

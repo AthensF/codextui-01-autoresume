@@ -39,6 +39,7 @@ use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
+use crate::session::turn_execution_progress::DrainReport;
 use crate::skills::emit_explicit_skill_invocations;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::InFlightFuture;
@@ -1447,6 +1448,10 @@ async fn run_sampling_request(
     let mut initial_input = Some(input);
     let mut original_input = None;
     let mut executed_tool_calls_by_output = HashMap::new();
+    // When this is `Some`, we are the elected probe leader and must report
+    // the retry result back to the coordinator before returning or
+    // re-entering recovery.
+    let mut pending_probe: Option<(u64, codex_usage_limits::ProbeOrigin)> = None;
     loop {
         // A retry must not attribute the next tool call to the previous response.
         turn_context
@@ -1468,6 +1473,19 @@ async fn run_sampling_request(
             step_context.as_ref(),
             base_instructions.clone(),
         );
+        // Check the tree admission barrier before dispatching a model
+        // request. If another agent in the tree has encountered a waitable
+        // usage limit, this agent parks at this model boundary (registering
+        // as parked with the coordinator) rather than continuing to
+        // consume capacity.
+        sess.services
+            .agent_control
+            .park_at_model_boundary(sess.thread_id(), cancellation_token.child_token())
+            .await;
+        // Record that a model request is being dispatched for this turn.
+        turn_context
+            .execution_progress
+            .record_model_request_dispatched();
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),
@@ -1482,6 +1500,24 @@ async fn run_sampling_request(
         .await
         {
             Ok(output) => {
+                // Record that model output was received for this turn.
+                turn_context
+                    .execution_progress
+                    .record_model_output_received();
+                // If we were the probe leader, report admission to open
+                // the gate for other parked agents.
+                if let Some((generation, origin)) = pending_probe.take() {
+                    let coordinator = sess
+                        .services
+                        .agent_control
+                        .usage_limit_coordinator()
+                        .clone();
+                    coordinator.mark_probe_admitted(generation, origin).await;
+                }
+                // Note: finish_work is NOT called here after an individual
+                // model request. The coordinator work record persists until
+                // the true causal turn completion/abort in tasks/mod.rs,
+                // preserving automatic-resume accounting across retries.
                 return Ok((output, original_input.unwrap_or(prompt.input)));
             }
             Err(err) => match err.details() {
@@ -1494,9 +1530,113 @@ async fn run_sampling_request(
                     if let Some(rate_limits) = rate_limits {
                         sess.update_rate_limits(&turn_context, *rate_limits).await;
                     }
+                    // If we were the probe leader and hit another limit,
+                    // report the probe as limited before re-entering
+                    // recovery.
+                    if let Some((generation, _origin)) = pending_probe.take() {
+                        let coordinator = sess
+                            .services
+                            .agent_control
+                            .usage_limit_coordinator()
+                            .clone();
+                        if let Some(hint) = super::usage_limit_recovery::extract_recovery_hint(&err)
+                        {
+                            let encounter = super::usage_limit_recovery::hint_to_encounter(
+                                hint,
+                                turn_context.execution_progress.as_ref(),
+                            );
+                            coordinator.mark_probe_limited(generation, encounter).await;
+                        } else {
+                            coordinator
+                                .mark_probe_failed(
+                                    generation,
+                                    "usage limit without hint".to_string(),
+                                )
+                                .await;
+                        }
+                    }
+                    // If the error carries a recovery hint, attempt
+                    // coordinated recovery instead of returning
+                    // immediately. The turn stays alive (RegularTask
+                    // remains active) and the same persisted turn
+                    // context continues after recovery.
+                    if super::usage_limit_recovery::is_recoverable_usage_limit(&err) {
+                        let agent_control = &sess.services.agent_control;
+                        let coordinator = agent_control.usage_limit_coordinator().clone();
+                        let barrier = agent_control.tree_barrier().clone();
+                        // Seal the tree admission barrier so no new child
+                        // spawns or turn triggers slip through while we
+                        // are suspending.
+                        barrier.seal();
+                        let work_id = super::usage_limit_recovery::derive_work_id(
+                            turn_context.turn_metadata_state.root_turn_id(),
+                            &turn_context.sub_id,
+                        );
+                        let thread_id = sess.thread_id().to_string();
+                        let turn_id = turn_context.sub_id.clone();
+                        // Snapshot live tree membership to register as
+                        // expected participants. This ensures the
+                        // coordinator does not elect a probe until all
+                        // live tree members have parked or completed.
+                        let expected_participants = agent_control
+                            .list_live_agent_subtree_thread_ids(agent_control.session_id().into())
+                            .await
+                            .map(|ids| ids.into_iter().map(|id| id.to_string()).collect::<Vec<_>>())
+                            .unwrap_or_default();
+                        let outcome = super::usage_limit_recovery::handle_usage_limit_encounter(
+                            &coordinator,
+                            work_id,
+                            thread_id,
+                            turn_id,
+                            &err,
+                            turn_context.execution_progress.as_ref(),
+                            expected_participants,
+                            cancellation_token.child_token(),
+                        )
+                        .await;
+                        match outcome {
+                            super::usage_limit_recovery::RecoveryOutcome::Resume(permit) => {
+                                // The gate is open or we are the elected
+                                // probe leader. Unseal the barrier so
+                                // parked agents and new work can proceed.
+                                barrier.unseal();
+                                if permit.is_leader() {
+                                    pending_probe = Some((
+                                        permit.generation(),
+                                        permit
+                                            .origin()
+                                            .unwrap_or(codex_usage_limits::ProbeOrigin::Automatic),
+                                    ));
+                                }
+                                continue;
+                            }
+                            super::usage_limit_recovery::RecoveryOutcome::NotRecoverable => {
+                                barrier.unseal();
+                                return Err(err);
+                            }
+                            super::usage_limit_recovery::RecoveryOutcome::Cancelled => {
+                                barrier.unseal();
+                                return Err(err);
+                            }
+                        }
+                    }
                     return Err(err);
                 }
-                _ => err,
+                _ => {
+                    // If we were the probe leader and hit a
+                    // non-recoverable error, report the probe as failed.
+                    if let Some((generation, _origin)) = pending_probe.take() {
+                        let coordinator = sess
+                            .services
+                            .agent_control
+                            .usage_limit_coordinator()
+                            .clone();
+                        coordinator
+                            .mark_probe_failed(generation, "non-recoverable error".to_string())
+                            .await;
+                    }
+                    err
+                }
             },
         };
 
@@ -2230,7 +2370,8 @@ async fn drain_in_flight(
     in_flight: &mut FuturesOrdered<InFlightFuture<'static>>,
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
-) -> CodexResult<()> {
+) -> CodexResult<DrainReport> {
+    let mut report = DrainReport::default();
     while let Some(res) = in_flight.next().await {
         match res {
             Ok(envelope) => {
@@ -2242,13 +2383,18 @@ async fn drain_in_flight(
                 .await;
                 sess.record_annotated_conversation_items(&turn_context, vec![envelope])
                     .await;
+                // Record tool completion now that model-visible output
+                // has been produced and persisted.
+                turn_context.execution_progress.record_tool_completed();
+                report.completed = report.completed.saturating_add(1);
             }
             Err(err) => {
                 error_or_panic(format!("in-flight tool future failed during drain: {err}"));
+                report.failed_without_output = report.failed_without_output.saturating_add(1);
             }
         }
     }
-    Ok(())
+    Ok(report)
 }
 
 fn assign_missing_streamed_response_item_id(
@@ -2858,8 +3004,14 @@ async fn try_run_sampling_request(
     } else {
         Some(turn_context.turn_timing_state.begin_tool_blocking())
     };
-    drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await?;
+    let drain_report = drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await?;
     drop(tool_blocking_timing_guard);
+    // Record the drain result in execution progress so that recovery
+    // orchestration can detect ambiguous drains (failed futures without
+    // durable output) and refuse automatic continuation.
+    turn_context
+        .execution_progress
+        .record_drain_report(&drain_report);
 
     if should_emit_token_count {
         // A tool call such as request_user_input can intentionally pause the turn. Emit token

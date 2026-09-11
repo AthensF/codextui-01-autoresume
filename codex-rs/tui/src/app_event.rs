@@ -1548,6 +1548,28 @@ pub(crate) enum AppEvent {
         turn_revision: usize,
         result: Result<String, String>,
     },
+
+    /// Result of a `thread/usageLimit/read` background request.
+    UsageLimitStatusRead {
+        snapshot: Option<codex_app_server_protocol::UsageLimitSnapshot>,
+    },
+
+    /// Result of a `thread/usageLimit/action` request.
+    UsageLimitActionResult {
+        result: codex_app_server_protocol::UsageLimitActionResult,
+    },
+
+    /// Request the app layer to read the current usage-limit status.
+    RefreshUsageLimitStatus {
+        thread_id: ThreadId,
+    },
+
+    /// Request the app layer to send a usage-limit action.
+    SendUsageLimitAction {
+        thread_id: ThreadId,
+        generation: u64,
+        action: codex_app_server_protocol::UsageLimitAction,
+    },
 }
 
 /// Named profile selection to apply after any required UI guardrails complete.

@@ -29,6 +29,7 @@ use crate::types::SkillsConfig;
 use crate::types::ToolSuggestConfig;
 use crate::types::Tui;
 use crate::types::UriBasedFileOpener;
+use crate::types::UsageLimitsToml;
 use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
@@ -532,6 +533,9 @@ pub struct ConfigToml {
     pub experimental_use_unified_exec_tool: Option<bool>,
     /// Preferred OSS provider for local models, e.g. "lmstudio" or "ollama".
     pub oss_provider: Option<String>,
+
+    /// Usage-limit queueing and auto-resume settings.
+    pub usage_limits: Option<UsageLimitsToml>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
