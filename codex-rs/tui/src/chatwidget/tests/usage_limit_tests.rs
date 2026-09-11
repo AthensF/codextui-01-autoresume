@@ -288,3 +288,43 @@ async fn usage_limit_action_result_applied_shows_message() {
     assert!(!chat.usage_limit_wait.is_tree_closed());
     let _ = UsageLimitActionResult::Applied;
 }
+
+#[tokio::test]
+async fn usage_limit_status_detail_includes_next_check_and_manual_reason() {
+    use codex_app_server_protocol::UsageLimitManualWaitReason;
+    use codex_app_server_protocol::UsageLimitSnapshot;
+    use codex_app_server_protocol::UsageLimitWaitPhase;
+
+    let snapshot = UsageLimitSnapshot {
+        work_id: "work-1".to_string(),
+        generation: 1,
+        trigger_thread_id: "thread-1".to_string(),
+        trigger_turn_id: "turn-1".to_string(),
+        phase: UsageLimitWaitPhase::ManualWait,
+        classification: codex_app_server_protocol::UsageLimitClassification::UsageWindow,
+        limit_id: None,
+        reset_at: Some(1_000_100),
+        next_check_at: Some(1_000_050),
+        auto_resume_enabled: false,
+        automatic_resumes_used: 3,
+        max_auto_resumes: 5,
+        availability_checks_used: 2,
+        max_availability_checks: 3,
+        unknown_reset_wait_started_at: None,
+        unknown_reset_max_wait_seconds: 600,
+        manual_wait_reason: Some(UsageLimitManualWaitReason::AutoResumeLimitReached),
+        parked_thread_ids: Vec::new(),
+        expected_participants: Vec::new(),
+        leader_thread_id: None,
+        manual_retry_requested: false,
+    };
+
+    let detail =
+        super::usage_limit_wait::status_detail(&snapshot, 1_000_000).expect("detail exists");
+    assert!(detail.contains("reset in 1m 40s"), "detail: {detail}");
+    assert!(detail.contains("next check in 50s"), "detail: {detail}");
+    assert!(
+        detail.contains("auto-resume limit reached"),
+        "detail: {detail}"
+    );
+}

@@ -413,6 +413,7 @@ impl QueuedItemService {
             trace: None,
             cyber_access_program: None,
             members,
+            usage_limit_snapshot: manifest.usage_limit_snapshot.clone(),
         };
 
         match thread.recover_tree(request).await {

@@ -117,6 +117,58 @@ impl Machine {
             .map(|g| generation_to_snapshot(g, &self.work_records))
     }
 
+    /// Restores the machine state from a serialized snapshot.
+    ///
+    /// This is used by a replacement process to rehydrate the coordinator
+    /// after a restart.  Monotonic timestamps (`next_check_deadline`,
+    /// `unknown_reset_wait_started`) cannot be restored across processes
+    /// and are left as `None`; the wall-clock fields are restored so the
+    /// snapshot reports the correct phase, reset time, and counters.
+    pub fn restore_snapshot(&mut self, snapshot: &WaitSnapshot) {
+        let generation = WaitGeneration {
+            work_id: snapshot.work_id.clone(),
+            generation: snapshot.generation,
+            trigger_thread_id: snapshot.trigger_thread_id.clone(),
+            trigger_turn_id: snapshot.trigger_turn_id.clone(),
+            phase: snapshot.phase.clone(),
+            classification: snapshot.classification.clone(),
+            disposition: WaitDisposition::Suspended,
+            limit_id: snapshot.limit_id.clone(),
+            reset_at: snapshot
+                .reset_at
+                .map(|ts| chrono::DateTime::from_timestamp(ts, 0).unwrap_or_default()),
+            next_check_at: snapshot
+                .next_check_at
+                .map(|ts| chrono::DateTime::from_timestamp(ts, 0).unwrap_or_default()),
+            next_check_deadline: None,
+            auto_resume_enabled: snapshot.auto_resume_enabled,
+            availability_checks_used: snapshot.availability_checks_used,
+            max_availability_checks: snapshot.max_availability_checks,
+            unknown_reset_wait_started: None,
+            unknown_reset_wait_started_wall: snapshot
+                .unknown_reset_wait_started_at
+                .map(|ts| chrono::DateTime::from_timestamp(ts, 0).unwrap_or_default()),
+            unknown_reset_max_wait: Duration::from_secs(snapshot.unknown_reset_max_wait_seconds),
+            manual_wait_reason: snapshot.manual_wait_reason.clone(),
+            parked_thread_ids: snapshot.parked_thread_ids.iter().cloned().collect(),
+            leader_thread_id: snapshot.leader_thread_id.clone(),
+            manual_retry_requested: snapshot.manual_retry_requested,
+            expected_participants: snapshot.expected_participants.iter().cloned().collect(),
+        };
+        self.next_generation = snapshot.generation.max(self.next_generation) + 1;
+        // Ensure the work record has the correct counters.
+        let record = self
+            .work_records
+            .entry(snapshot.work_id.clone())
+            .or_insert_with(|| WorkRecord {
+                automatic_resumes_used: 0,
+                max_auto_resumes: snapshot.max_auto_resumes,
+            });
+        record.automatic_resumes_used = snapshot.automatic_resumes_used;
+        record.max_auto_resumes = snapshot.max_auto_resumes;
+        self.active = Some(generation);
+    }
+
     /// Reports a waitable usage-limit encounter.
     ///
     /// If a wait is already active for the same work ID, the encounter

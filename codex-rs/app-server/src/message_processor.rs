@@ -322,6 +322,7 @@ impl MessageProcessor {
         let extension_event_sink =
             app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
         let mut queue_service = None;
+        let queue_store_for_usage_limit = queue_store.clone();
         let thread_manager = Arc::new_cyclic(|thread_manager| {
             queue_service = queue_store.map(|queue| {
                 Arc::new(QueuedItemService::new(
@@ -514,7 +515,10 @@ impl MessageProcessor {
             outgoing.clone(),
             queue_service,
         );
-        let usage_limit_processor = UsageLimitRequestProcessor::new(Arc::clone(&thread_manager));
+        let usage_limit_processor = UsageLimitRequestProcessor::new(
+            Arc::clone(&thread_manager),
+            queue_store_for_usage_limit,
+        );
         let project_processor = ProjectRequestProcessor::new(
             Arc::clone(&thread_store),
             outgoing.clone(),

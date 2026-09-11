@@ -19,11 +19,18 @@ use crate::error_code::invalid_request;
 
 pub(crate) struct UsageLimitRequestProcessor {
     thread_manager: Arc<ThreadManager>,
+    queue_store: Option<Arc<dyn codex_thread_store::QueueStore>>,
 }
 
 impl UsageLimitRequestProcessor {
-    pub(crate) fn new(thread_manager: Arc<ThreadManager>) -> Self {
-        Self { thread_manager }
+    pub(crate) fn new(
+        thread_manager: Arc<ThreadManager>,
+        queue_store: Option<Arc<dyn codex_thread_store::QueueStore>>,
+    ) -> Self {
+        Self {
+            thread_manager,
+            queue_store,
+        }
     }
 
     pub(crate) async fn read(
@@ -32,15 +39,22 @@ impl UsageLimitRequestProcessor {
     ) -> Result<ThreadUsageLimitReadResponse, JSONRPCErrorError> {
         let thread_id = ThreadId::from_string(&params.thread_id)
             .map_err(|_| invalid_request("invalid thread_id"))?;
-        let thread = self
-            .thread_manager
-            .get_thread(thread_id)
-            .await
-            .map_err(|_| invalid_request("thread not found"))?;
-        let snapshot = thread.usage_limit_snapshot().await;
-        Ok(ThreadUsageLimitReadResponse {
-            snapshot: snapshot.map(map_snapshot),
-        })
+        // First try the loaded thread's in-memory coordinator.
+        if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
+            let snapshot = thread.usage_limit_snapshot().await;
+            return Ok(ThreadUsageLimitReadResponse {
+                snapshot: snapshot.map(map_snapshot),
+            });
+        }
+        // Thread is not loaded; try to hydrate from durable recovery manifests.
+        if let Some(queue_store) = &self.queue_store {
+            if let Some(snapshot) = hydrate_snapshot_from_queue(queue_store, thread_id).await {
+                return Ok(ThreadUsageLimitReadResponse {
+                    snapshot: Some(snapshot),
+                });
+            }
+        }
+        Err(invalid_request("thread not found"))
     }
 
     pub(crate) async fn action(
@@ -143,4 +157,33 @@ fn map_manual_wait_reason(r: codex_usage_limits::ManualWaitReason) -> UsageLimit
             UsageLimitManualWaitReason::WaitCeilingReached
         }
     }
+}
+
+/// Hydrates a usage-limit snapshot for an unloaded thread from durable
+/// recovery manifests in the queue store.
+///
+/// When a thread is not loaded in memory, its in-memory coordinator is
+/// gone.  However, if the thread was suspended for durable recovery, the
+/// `SuspendedTreeRecoveryManifest` in the queue carries a serialized
+/// `WaitSnapshot`.  This function finds the most recent manifest for the
+/// thread and deserialises the snapshot.
+async fn hydrate_snapshot_from_queue(
+    queue_store: &Arc<dyn codex_thread_store::QueueStore>,
+    thread_id: ThreadId,
+) -> Option<UsageLimitSnapshot> {
+    let items = queue_store.list_page(thread_id, 0, 50).await.ok()?;
+    for item in items {
+        if let Ok(Some(manifest)) =
+            codex_queue_extension::decode_suspended_tree_recovery(&item.payload)
+        {
+            if let Some(snapshot_value) = &manifest.usage_limit_snapshot {
+                if let Ok(snapshot) = serde_json::from_value::<codex_usage_limits::WaitSnapshot>(
+                    snapshot_value.clone(),
+                ) {
+                    return Some(map_snapshot(snapshot));
+                }
+            }
+        }
+    }
+    None
 }

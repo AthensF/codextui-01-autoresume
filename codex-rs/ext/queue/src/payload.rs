@@ -92,6 +92,10 @@ pub struct SuspendedTreeRecoveryManifest {
     pub not_before_ms: i64,
     /// Replay-safety classification of the suspended tree.
     pub replay_safety: ReplaySafetySummary,
+    /// Serialized usage-limit coordinator snapshot at the time of
+    /// suspension, if a wait was active.  A replacement process
+    /// deserialises this to rehydrate the coordinator.
+    pub usage_limit_snapshot: Option<Value>,
 }
 
 /// A member thread in a suspended agent tree.

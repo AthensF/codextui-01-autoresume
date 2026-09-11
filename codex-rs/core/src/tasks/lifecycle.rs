@@ -114,6 +114,7 @@ impl Session {
         members: &[codex_extension_api::SuspendedMemberInfo],
         coordinator_generation: u64,
         replay_safety: &codex_extension_api::SuspendedReplaySafety,
+        usage_limit_snapshot: Option<&serde_json::Value>,
     ) {
         for contributor in self.services.extensions.thread_lifecycle_contributors() {
             contributor
@@ -124,6 +125,7 @@ impl Session {
                     members,
                     coordinator_generation,
                     replay_safety,
+                    usage_limit_snapshot,
                     session_store: &self.services.session_extension_data,
                     thread_store: &self.services.thread_extension_data,
                 })

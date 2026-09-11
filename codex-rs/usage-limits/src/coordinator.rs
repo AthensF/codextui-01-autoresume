@@ -15,6 +15,7 @@ use crate::state::ProbeOrigin;
 use crate::state::WaitAction;
 use crate::state::WaitSnapshot;
 use chrono::Utc;
+use serde_json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
@@ -96,6 +97,25 @@ impl UsageLimitCoordinator {
     pub async fn snapshot(&self) -> Option<WaitSnapshot> {
         let machine = self.machine.lock().await;
         machine.snapshot()
+    }
+
+    /// Restores the coordinator state from a serialized JSON snapshot.
+    ///
+    /// This is used by a replacement process to rehydrate the coordinator
+    /// after a restart so unloaded threads can report their usage-limit
+    /// status without a live encounter.
+    pub async fn restore_snapshot(
+        &self,
+        snapshot: &serde_json::Value,
+    ) -> Result<(), serde_json::Error> {
+        let wait_snapshot: WaitSnapshot = serde_json::from_value(snapshot.clone())?;
+        let mut machine = self.machine.lock().await;
+        machine.restore_snapshot(&wait_snapshot);
+        let snapshot = machine.snapshot();
+        drop(machine);
+        let _ = self.snapshot_tx.send(snapshot);
+        self.gate_notify.notify_waiters();
+        Ok(())
     }
 
     /// Returns the resolved policy.

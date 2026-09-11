@@ -309,7 +309,6 @@ impl ChatWidget {
             | ServerNotification::ThreadStarted(_)
             | ServerNotification::ThreadStatusChanged(_)
             | ServerNotification::ThreadReverted(_)
-            | ServerNotification::ThreadQueueChanged(_)
             | ServerNotification::ThreadArchived(_)
             | ServerNotification::ThreadDeleted(_)
             | ServerNotification::ThreadUnarchived(_)
@@ -345,6 +344,12 @@ impl ChatWidget {
             ServerNotification::ContextCompacted(_) => {}
             ServerNotification::ThreadUsageLimitUpdated(notification) => {
                 self.handle_usage_limit_updated(notification);
+            }
+            ServerNotification::ThreadQueueChanged(_) => {
+                // The durable queue changed (e.g. a recovery dispatch
+                // transitioned a queued item).  Refresh the usage-limit
+                // status so the TUI reflects any phase change.
+                self.refresh_usage_limit_status();
             }
         }
         // Tool and hook activity can recreate a hidden row with its default

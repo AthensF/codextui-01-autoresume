@@ -416,7 +416,23 @@ impl CodexThread {
             trace,
             cyber_access_program,
             members,
+            usage_limit_snapshot,
         } = request;
+
+        // Rehydrate the usage-limit coordinator from the durable snapshot
+        // so the recovered thread starts with the correct wait state.
+        if let Some(snapshot) = usage_limit_snapshot {
+            if let Err(error) = self
+                .session
+                .services
+                .agent_control
+                .usage_limit_coordinator()
+                .restore_snapshot(&snapshot)
+                .await
+            {
+                tracing::warn!(%error, "failed to restore usage-limit coordinator snapshot during tree recovery");
+            }
+        }
 
         // Recover the root thread first.
         let root_result = self

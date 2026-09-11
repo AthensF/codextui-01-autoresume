@@ -1283,6 +1283,7 @@ async fn scheduler_dispatches_suspended_tree_recovery_no_manager() -> anyhow::Re
         members: Vec::new(),
         coordinator_generation: 0,
         not_before_ms: 0,
+        usage_limit_snapshot: None,
         replay_safety: codex_queue_extension::ReplaySafetySummary::Safe {
             verified_tool_calls: 0,
             categories: codex_queue_extension::ReplayEffectCategories::default(),
@@ -1326,6 +1327,7 @@ async fn scheduler_refuses_attention_required_recovery() -> anyhow::Result<()> {
         members: Vec::new(),
         coordinator_generation: 0,
         not_before_ms: 0,
+        usage_limit_snapshot: None,
         replay_safety: codex_queue_extension::ReplaySafetySummary::AttentionRequired {
             reason: "ambiguous tool output".to_string(),
         },
@@ -1504,6 +1506,7 @@ async fn recovery_manifest_members_are_parent_first() -> anyhow::Result<()> {
         ],
         coordinator_generation: 1,
         not_before_ms: 0,
+        usage_limit_snapshot: None,
         replay_safety: codex_queue_extension::ReplaySafetySummary::Safe {
             verified_tool_calls: 0,
             categories: codex_queue_extension::ReplayEffectCategories::default(),
@@ -1539,6 +1542,7 @@ async fn partial_suspension_rollback_releases_lease() -> anyhow::Result<()> {
         members: Vec::new(),
         coordinator_generation: 0,
         not_before_ms: 0,
+        usage_limit_snapshot: None,
         replay_safety: codex_queue_extension::ReplaySafetySummary::Safe {
             verified_tool_calls: 0,
             categories: codex_queue_extension::ReplayEffectCategories::default(),
@@ -1607,6 +1611,7 @@ async fn on_turn_suspended_enqueues_recovery_manifest() -> anyhow::Result<()> {
         members: &[],
         coordinator_generation: 7,
         replay_safety: &replay_safety,
+        usage_limit_snapshot: None,
         session_store: &session_store,
         thread_store: &thread_store,
     };
@@ -1662,6 +1667,7 @@ async fn on_turn_suspended_due_immediately_is_discovered_by_scheduler() -> anyho
         members: &[],
         coordinator_generation: 0,
         replay_safety: &replay_safety,
+        usage_limit_snapshot: None,
         session_store: &session_store,
         thread_store: &thread_store,
     };
@@ -1740,6 +1746,7 @@ async fn on_turn_suspended_preserves_members_and_coordinator_generation() -> any
         members: std::slice::from_ref(&member),
         coordinator_generation: 42,
         replay_safety: &replay_safety,
+        usage_limit_snapshot: None,
         session_store: &session_store,
         thread_store: &thread_store,
     };
@@ -1793,6 +1800,142 @@ async fn on_turn_suspended_preserves_members_and_coordinator_generation() -> any
             },
         }
     );
+
+    Ok(())
+}
+
+/// A suspended-tree recovery manifest enqueued before shutdown is still
+/// present and discoverable after the queue runner stops claiming, so a
+/// replacement process can dispatch it.
+///
+/// This verifies the graceful-shutdown ordering guarantee: the queue
+/// runner stops claiming before waiting threads are suspended, so the
+/// manifest written by the suspension callback is not raced by a
+/// duplicate dispatch from the current process.
+#[tokio::test]
+async fn suspended_tree_recovery_survives_shutdown_and_is_redispatchable() -> anyhow::Result<()> {
+    let (queue, _home) = test_queue().await?;
+    let thread_id = ThreadId::new();
+
+    // Enqueue a suspended-tree recovery manifest (simulating what
+    // on_turn_suspended would write during graceful shutdown).
+    let manifest = codex_queue_extension::SuspendedTreeRecoveryManifest {
+        root_thread_id: thread_id,
+        root_turn_id: "suspended-turn".to_string(),
+        original_input: None,
+        members: Vec::new(),
+        coordinator_generation: 1,
+        not_before_ms: 0,
+        usage_limit_snapshot: None,
+        replay_safety: codex_queue_extension::ReplaySafetySummary::Safe {
+            verified_tool_calls: 0,
+            categories: codex_queue_extension::ReplayEffectCategories::default(),
+        },
+    };
+    let payload = codex_queue_extension::QueuePayload::suspended_tree_recovery(manifest)?;
+    queue.enqueue(thread_id, payload).await?;
+
+    // Simulate graceful shutdown step 1: stop claiming.
+    let service = QueuedItemService::new(
+        Arc::clone(&queue),
+        Weak::new(),
+        Arc::new(NoopExtensionEventSink),
+    );
+    service.stop_claiming();
+    assert!(!service.is_claiming_enabled());
+
+    // The scheduler cannot dispatch the item (claiming is stopped).
+    let dispatched = service.schedule_due_items().await?;
+    assert_eq!(0, dispatched);
+
+    // The manifest is still in the queue, available for a replacement.
+    let items = queue.list_page(thread_id, 0, 10).await?;
+    assert_eq!(1, items.len());
+
+    // A replacement process starts and discovers the due manifest.
+    let replacement = QueuedItemService::new(
+        Arc::clone(&queue),
+        Weak::new(),
+        Arc::new(NoopExtensionEventSink),
+    );
+    replacement.recover_leases().await?;
+    let due = queue.list_due_heads(0, 10).await?;
+    assert_eq!(1, due.len());
+    assert_eq!(due[0].thread_id, thread_id);
+
+    Ok(())
+}
+
+/// The `on_turn_suspended` callback preserves the serialized usage-limit
+/// coordinator snapshot so a replacement process can rehydrate the
+/// coordinator for unloaded threads.
+#[tokio::test]
+async fn on_turn_suspended_preserves_usage_limit_snapshot() -> anyhow::Result<()> {
+    let (queue, _home) = test_queue().await?;
+    let thread_id = ThreadId::new();
+    let thread_id_str = thread_id.to_string();
+
+    let service = QueuedItemService::new(
+        Arc::clone(&queue),
+        Weak::new(),
+        Arc::new(NoopExtensionEventSink),
+    );
+
+    // Simulate a coordinator snapshot at suspension time.
+    let snapshot = serde_json::json!({
+        "work_id": "root-turn-1",
+        "generation": 7,
+        "trigger_thread_id": thread_id_str,
+        "trigger_turn_id": "root-turn-1",
+        "phase": "Suspended",
+        "classification": "UsageWindow",
+        "limit_id": null,
+        "reset_at": 1_700_000_000,
+        "next_check_at": null,
+        "auto_resume_enabled": true,
+        "automatic_resumes_used": 1,
+        "max_auto_resumes": 5,
+        "availability_checks_used": 0,
+        "max_availability_checks": 3,
+        "unknown_reset_wait_started_at": null,
+        "unknown_reset_max_wait_seconds": 600,
+        "manual_wait_reason": null,
+        "parked_thread_ids": [],
+        "expected_participants": [],
+        "leader_thread_id": null,
+        "manual_retry_requested": false,
+    });
+
+    let session_store = ExtensionData::new("session");
+    let thread_store = ExtensionData::new(&thread_id_str);
+    let replay_safety = codex_extension_api::SuspendedReplaySafety::Safe {
+        verified_tool_calls: 0,
+        categories: codex_extension_api::ReplayEffectCategories::default(),
+    };
+    let input = TurnSuspendedInput {
+        thread_id: &thread_id_str,
+        turn_id: "suspended-turn",
+        not_before_ms: 0,
+        members: &[],
+        coordinator_generation: 7,
+        replay_safety: &replay_safety,
+        usage_limit_snapshot: Some(&snapshot),
+        session_store: &session_store,
+        thread_store: &thread_store,
+    };
+    <QueuedItemService as ThreadLifecycleContributor<codex_core::config::Config>>::on_turn_suspended(
+        &service,
+        input,
+    )
+    .await;
+
+    // Decode the manifest and verify the snapshot round-trips.
+    let records = queue.list_page(thread_id, 0, 10).await?;
+    assert_eq!(1, records.len());
+    let manifest = codex_queue_extension::decode_suspended_tree_recovery(&records[0].payload)?
+        .expect("payload should be a suspended-tree recovery manifest");
+    assert_eq!(manifest.coordinator_generation, 7);
+    assert_eq!(manifest.usage_limit_snapshot, Some(snapshot));
 
     Ok(())
 }

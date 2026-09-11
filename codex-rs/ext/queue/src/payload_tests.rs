@@ -40,6 +40,7 @@ fn decode_turn_input_returns_none_for_suspended_tree_recovery() {
         members: Vec::new(),
         coordinator_generation: 1,
         not_before_ms: 0,
+        usage_limit_snapshot: None,
         replay_safety: ReplaySafetySummary::Safe {
             verified_tool_calls: 0,
             categories: ReplayEffectCategories::default(),
@@ -72,6 +73,7 @@ fn decode_suspended_tree_recovery_round_trips() {
         }],
         coordinator_generation: 3,
         not_before_ms: 1_700_000_000_000,
+        usage_limit_snapshot: None,
         replay_safety: ReplaySafetySummary::Safe {
             verified_tool_calls: 2,
             categories: ReplayEffectCategories::default(),
@@ -91,6 +93,7 @@ fn decode_suspended_tree_recovery_preserves_attention_required() {
         members: Vec::new(),
         coordinator_generation: 0,
         not_before_ms: 0,
+        usage_limit_snapshot: None,
         replay_safety: ReplaySafetySummary::AttentionRequired {
             reason: "pending approval".to_string(),
         },

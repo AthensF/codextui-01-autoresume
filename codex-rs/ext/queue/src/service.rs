@@ -680,6 +680,7 @@ where
                 coordinator_generation: input.coordinator_generation,
                 not_before_ms: input.not_before_ms,
                 replay_safety,
+                usage_limit_snapshot: input.usage_limit_snapshot.cloned(),
             };
             if let Err(error) = self.enqueue_suspended_tree_recovery(manifest).await {
                 tracing::warn!(

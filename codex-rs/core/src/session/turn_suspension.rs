@@ -139,14 +139,21 @@ pub(super) async fn suspend_turn_and_shutdown(
     // read after shutdown so the generation reflects the wait that triggered
     // the suspension; if no wait is active (e.g. graceful shutdown without a
     // usage limit), generation 0 is used.
-    let coordinator_generation = session
+    let coordinator_snapshot = session
         .services
         .agent_control
         .usage_limit_coordinator()
         .snapshot()
-        .await
+        .await;
+    let coordinator_generation = coordinator_snapshot
+        .as_ref()
         .map(|s| s.generation)
         .unwrap_or_default();
+    // Serialize the coordinator snapshot so a replacement process can
+    // rehydrate the coordinator for unloaded threads.
+    let usage_limit_snapshot = coordinator_snapshot
+        .as_ref()
+        .and_then(|s| serde_json::to_value(s).ok());
     let replay_safety = continuation_safety_to_replay_safety(&progress_snapshot);
     // Notify extensions (e.g. the queue extension) so a recovery manifest
     // is enqueued for durable hand-off.
@@ -158,6 +165,7 @@ pub(super) async fn suspend_turn_and_shutdown(
             members,
             coordinator_generation,
             &replay_safety,
+            usage_limit_snapshot.as_ref(),
         )
         .await;
     Ok(SuspendTurnOutcome::Suspended { turn_id })

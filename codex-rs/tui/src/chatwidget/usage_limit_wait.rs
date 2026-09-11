@@ -132,6 +132,21 @@ pub(super) fn status_detail(snapshot: &UsageLimitSnapshot, now: i64) -> Option<S
             parts.push("reset due".to_string());
         }
     }
+    // Surface the next availability check time when known and distinct
+    // from the reset time.
+    if let Some(next_check_at) = snapshot.next_check_at {
+        let check_remaining = next_check_at - now;
+        if check_remaining > 0 && Some(next_check_at) != snapshot.reset_at {
+            parts.push(format!(
+                "next check in {}",
+                format_remaining(check_remaining)
+            ));
+        }
+    }
+    // Surface the manual-wait reason when applicable.
+    if let Some(reason) = &snapshot.manual_wait_reason {
+        parts.push(manual_wait_reason_label(reason).to_string());
+    }
     if snapshot.auto_resume_enabled && snapshot.phase != UsageLimitWaitPhase::ManualWait {
         parts.push("auto-resume on".to_string());
     }
@@ -176,6 +191,15 @@ impl ChatWidget {
         }
     }
 
+    /// Refresh the usage-limit countdown on each frame tick when a wait
+    /// is active, so the user sees a live countdown without waiting for
+    /// the next `thread/usageLimit/updated` notification.
+    pub(super) fn refresh_usage_limit_countdown_if_due(&mut self) {
+        if self.usage_limit_wait.snapshot.is_some() {
+            self.refresh_usage_limit_status_indicator();
+        }
+    }
+
     /// Read the current usage-limit status from the app-server after thread
     /// start/resume/switch. Delegates to the app layer via `AppEvent`.
     pub(crate) fn refresh_usage_limit_status(&mut self) {
@@ -208,9 +232,37 @@ fn usage_limit_menu_items(snapshot: &UsageLimitSnapshot) -> Vec<SelectionItem> {
     let thread_id = ThreadId::from_string(&snapshot.trigger_thread_id).unwrap_or_default();
     let auto_resume_enabled = snapshot.auto_resume_enabled;
     let mut items = Vec::new();
+
+    // Build a context description summarising the wait state.
+    let mut context_parts = Vec::new();
+    context_parts.push(format!("Phase: {}", phase_label(&snapshot.phase)));
+    if let Some(reset_at) = snapshot.reset_at {
+        let now = chrono::Utc::now().timestamp();
+        let remaining = reset_at - now;
+        if remaining > 0 {
+            context_parts.push(format!("Reset in {}", format_remaining(remaining)));
+        } else {
+            context_parts.push("Reset due".to_string());
+        }
+    }
+    context_parts.push(format!(
+        "Auto-resumes: {}/{}",
+        snapshot.automatic_resumes_used, snapshot.max_auto_resumes
+    ));
+    context_parts.push(format!(
+        "Availability checks: {}/{}",
+        snapshot.availability_checks_used, snapshot.max_availability_checks
+    ));
+    if let Some(reason) = &snapshot.manual_wait_reason {
+        context_parts.push(manual_wait_reason_label(reason).to_string());
+    }
+    let context = context_parts.join(" · ");
+
     items.push(SelectionItem {
         name: "Retry now".to_string(),
-        description: Some("Trigger a revalidation probe immediately.".to_string()),
+        description: Some(format!(
+            "Trigger a revalidation probe immediately. {context}"
+        )),
         dismiss_on_select: true,
         actions: vec![Box::new(move |tx| {
             tx.send(AppEvent::SendUsageLimitAction {

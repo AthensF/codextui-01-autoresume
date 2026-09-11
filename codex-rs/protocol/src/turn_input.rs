@@ -88,6 +88,11 @@ pub struct TreeRecoveryRequest {
     pub cyber_access_program: Option<CyberAccessProgram>,
     /// Member threads to recover after the root, in parent-first order.
     pub members: Vec<TreeMemberRecoveryRequest>,
+    /// Serialized usage-limit coordinator snapshot at the time of
+    /// suspension, if a wait was active.  A replacement process
+    /// deserialises this to rehydrate the coordinator so the recovered
+    /// thread starts with the correct wait state.
+    pub usage_limit_snapshot: Option<serde_json::Value>,
 }
 
 /// A member thread to recover as part of a tree recovery.

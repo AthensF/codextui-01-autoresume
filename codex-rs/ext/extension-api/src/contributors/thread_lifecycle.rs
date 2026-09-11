@@ -178,6 +178,12 @@ pub struct TurnSuspendedInput<'a> {
     pub coordinator_generation: u64,
     /// Replay-safety classification of the suspended tree.
     pub replay_safety: &'a SuspendedReplaySafety,
+    /// Serialized usage-limit coordinator snapshot at the time of
+    /// suspension, if a wait was active.  A replacement process
+    /// deserialises this to rehydrate the coordinator so unloaded
+    /// threads can report their usage-limit status without a live
+    /// encounter.
+    pub usage_limit_snapshot: Option<&'a serde_json::Value>,
     /// Store scoped to the host session runtime.
     pub session_store: &'a ExtensionData,
     /// Store scoped to this thread runtime.
