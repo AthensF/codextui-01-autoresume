@@ -125,6 +125,7 @@ impl ToolCallRuntime {
         let terminal_outcome_reached = Arc::new(AtomicBool::new(false));
         let dispatch_terminal_outcome_reached = Arc::clone(&terminal_outcome_reached);
         let dispatch_call = call.clone();
+        let dispatch_tool_name = call.tool_name.clone();
 
         // Code-mode callbacks can resume outside the turn's local span ancestry.
         let dispatch_span = trace_span!(
@@ -158,7 +159,7 @@ impl ToolCallRuntime {
                 step_context
                     .turn
                     .execution_progress
-                    .record_tool_dispatched();
+                    .record_tool_dispatched(&dispatch_tool_name);
                 if let Some(execution_started_at) = execution_started_at {
                     let _ = execution_started_at.set(Instant::now());
                 }

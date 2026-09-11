@@ -99,6 +99,31 @@ pub(crate) struct TurnExecutionProgressSnapshot {
     pub model_request_count: u32,
     /// Number of tools dispatched so far in this turn.
     pub tool_dispatch_count: u32,
+    /// Per-category counts of completed tool calls.
+    pub completed_categories: CompletedToolCategories,
+}
+
+/// Per-category counts of completed tool calls with model-visible output.
+///
+/// Used by the replay-safety audit to produce a per-effect breakdown
+/// for the durable recovery manifest.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CompletedToolCategories {
+    /// Completed `exec_command` / shell tool calls.
+    pub shell_commands: u32,
+    /// Completed `apply_patch` / file-edit tool calls.
+    pub file_edits: u32,
+    /// Completed MCP tool calls (non-default namespace).
+    pub mcp_calls: u32,
+    /// Completed dynamic tool calls (default namespace, not exec/apply_patch).
+    pub dynamic_tool_calls: u32,
+}
+
+impl CompletedToolCategories {
+    /// Returns the total across all categories.
+    pub(crate) fn total(&self) -> u32 {
+        self.shell_commands + self.file_edits + self.mcp_calls + self.dynamic_tool_calls
+    }
 }
 
 /// Monotonic execution-progress tracker for a single turn.
@@ -133,11 +158,30 @@ impl TurnExecutionProgress {
     }
 
     /// Records that a tool has been admitted (dispatched to the tool runner)
-    /// after the parallel-execution gate.
-    pub(crate) fn record_tool_dispatched(&self) {
+    /// after the parallel-execution gate.  The tool name is used to classify
+    /// the dispatch into a replay-safety category.
+    pub(crate) fn record_tool_dispatched(&self, tool_name: &codex_protocol::ToolName) {
         let mut s = self.lock();
         s.tool_dispatched = true;
         s.tool_dispatch_count = s.tool_dispatch_count.saturating_add(1);
+        if tool_name.is_default_namespace() {
+            match tool_name.name.as_str() {
+                "exec_command" | "write_stdin" => {
+                    s.completed_categories.shell_commands =
+                        s.completed_categories.shell_commands.saturating_add(1);
+                }
+                "apply_patch" => {
+                    s.completed_categories.file_edits =
+                        s.completed_categories.file_edits.saturating_add(1);
+                }
+                _ => {
+                    s.completed_categories.dynamic_tool_calls =
+                        s.completed_categories.dynamic_tool_calls.saturating_add(1);
+                }
+            }
+        } else {
+            s.completed_categories.mcp_calls = s.completed_categories.mcp_calls.saturating_add(1);
+        }
     }
 
     /// Records that a tool has completed execution with model-visible output.

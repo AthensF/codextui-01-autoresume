@@ -110,6 +110,22 @@ pub struct SuspendedTreeMember {
     pub root_turn_id: String,
     /// Agent path from root to this member (e.g. `"root.child"`).
     pub agent_path: String,
+    /// Per-member replay-safety classification.
+    pub replay_safety: ReplaySafetySummary,
+}
+
+/// Per-category counts of completed, model-visible tool effects.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayEffectCategories {
+    /// Completed `exec_command` / shell tool calls flushed to history.
+    pub shell_commands: usize,
+    /// Completed `apply_patch` / file-edit tool calls flushed to history.
+    pub file_edits: usize,
+    /// Completed MCP tool calls flushed to history.
+    pub mcp_calls: usize,
+    /// Completed dynamic tool calls flushed to history.
+    pub dynamic_tool_calls: usize,
 }
 
 /// Replay-safety classification for a suspended tree.
@@ -124,6 +140,8 @@ pub enum ReplaySafetySummary {
     Safe {
         /// Number of completed tool calls verified in history.
         verified_tool_calls: usize,
+        /// Per-category breakdown of the verified tool calls.
+        categories: ReplayEffectCategories,
     },
     /// One or more tool/hook outcomes are ambiguous.  Automatic recovery
     /// is blocked; the user must manually intervene.

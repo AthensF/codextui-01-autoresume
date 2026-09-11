@@ -42,6 +42,7 @@ fn decode_turn_input_returns_none_for_suspended_tree_recovery() {
         not_before_ms: 0,
         replay_safety: ReplaySafetySummary::Safe {
             verified_tool_calls: 0,
+            categories: ReplayEffectCategories::default(),
         },
     };
     let json = QueuePayload::suspended_tree_recovery(manifest).unwrap();
@@ -64,11 +65,16 @@ fn decode_suspended_tree_recovery_round_trips() {
             parent_turn_id: "root-turn".to_string(),
             root_turn_id: "root-turn".to_string(),
             agent_path: "root.child".to_string(),
+            replay_safety: ReplaySafetySummary::Safe {
+                verified_tool_calls: 1,
+                categories: ReplayEffectCategories::default(),
+            },
         }],
         coordinator_generation: 3,
         not_before_ms: 1_700_000_000_000,
         replay_safety: ReplaySafetySummary::Safe {
             verified_tool_calls: 2,
+            categories: ReplayEffectCategories::default(),
         },
     };
     let json = QueuePayload::suspended_tree_recovery(manifest.clone()).unwrap();

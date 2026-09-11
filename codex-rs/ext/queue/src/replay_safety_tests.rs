@@ -46,7 +46,8 @@ fn classify_replay_safety_safe_when_no_blocking() {
     assert_eq!(
         result,
         ReplaySafetySummary::Safe {
-            verified_tool_calls: 5
+            verified_tool_calls: 5,
+            categories: ReplayEffectCategories::default(),
         }
     );
 }

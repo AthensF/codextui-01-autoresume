@@ -102,7 +102,7 @@ fn hint_to_encounter_suspended_when_model_output_received() {
 #[test]
 fn hint_to_encounter_suspended_when_tool_dispatched() {
     let progress = TurnExecutionProgress::new();
-    progress.record_tool_dispatched();
+    progress.record_tool_dispatched(&codex_protocol::ToolName::plain("exec_command"));
     let hint = UsageLimitRecoveryHint::new(UsageLimitRecoveryKind::UsageWindow);
     let encounter = hint_to_encounter(&hint, &progress);
     assert_eq!(encounter.disposition, WaitDisposition::Suspended);
@@ -182,7 +182,7 @@ fn progress_model_output_makes_non_pristine() {
 #[test]
 fn progress_tool_dispatched_creates_side_effects() {
     let progress = TurnExecutionProgress::new();
-    progress.record_tool_dispatched();
+    progress.record_tool_dispatched(&codex_protocol::ToolName::plain("exec_command"));
     assert!(!progress.is_pristine());
     assert!(progress.has_side_effects());
     assert!(progress.side_effects_ambiguous());
@@ -191,7 +191,7 @@ fn progress_tool_dispatched_creates_side_effects() {
 #[test]
 fn progress_tool_completed_resolves_ambiguity() {
     let progress = TurnExecutionProgress::new();
-    progress.record_tool_dispatched();
+    progress.record_tool_dispatched(&codex_protocol::ToolName::plain("exec_command"));
     progress.record_tool_completed();
     assert!(progress.has_side_effects());
     assert!(!progress.side_effects_ambiguous());
@@ -218,9 +218,9 @@ fn progress_model_request_count_increments() {
 #[test]
 fn progress_tool_dispatch_count_increments() {
     let progress = TurnExecutionProgress::new();
-    progress.record_tool_dispatched();
-    progress.record_tool_dispatched();
-    progress.record_tool_dispatched();
+    progress.record_tool_dispatched(&codex_protocol::ToolName::plain("exec_command"));
+    progress.record_tool_dispatched(&codex_protocol::ToolName::plain("exec_command"));
+    progress.record_tool_dispatched(&codex_protocol::ToolName::plain("exec_command"));
     let snap = progress.snapshot();
     assert_eq!(snap.tool_dispatch_count, 3);
 }
@@ -249,7 +249,7 @@ fn progress_safe_to_suspend_with_only_model_output() {
 fn progress_not_safe_to_suspend_with_tools() {
     let progress = TurnExecutionProgress::new();
     progress.record_model_output_received();
-    progress.record_tool_dispatched();
+    progress.record_tool_dispatched(&codex_protocol::ToolName::plain("exec_command"));
     assert!(!progress.safe_to_suspend_at_model_boundary());
     assert!(progress.has_side_effects());
 }
@@ -281,7 +281,7 @@ fn continuation_safety_safe_to_suspend_with_only_model_output() {
 fn continuation_safety_effects_observed_after_tool_completed() {
     let progress = TurnExecutionProgress::new();
     progress.record_model_output_received();
-    progress.record_tool_dispatched();
+    progress.record_tool_dispatched(&codex_protocol::ToolName::plain("exec_command"));
     progress.record_tool_completed();
     assert_eq!(
         progress.continuation_safety(),
@@ -293,7 +293,7 @@ fn continuation_safety_effects_observed_after_tool_completed() {
 fn continuation_safety_attention_required_for_incomplete_tools() {
     let progress = TurnExecutionProgress::new();
     progress.record_model_output_received();
-    progress.record_tool_dispatched();
+    progress.record_tool_dispatched(&codex_protocol::ToolName::plain("exec_command"));
     // Tool dispatched but not completed → ambiguous
     assert_eq!(
         progress.continuation_safety(),
@@ -305,7 +305,7 @@ fn continuation_safety_attention_required_for_incomplete_tools() {
 fn continuation_safety_attention_required_for_missing_tool_output() {
     let progress = TurnExecutionProgress::new();
     progress.record_model_output_received();
-    progress.record_tool_dispatched();
+    progress.record_tool_dispatched(&codex_protocol::ToolName::plain("exec_command"));
     progress.record_tool_completed();
     progress.record_missing_tool_output();
     assert_eq!(
@@ -371,7 +371,7 @@ fn drain_report_not_ambiguous_when_all_completed() {
 fn record_drain_report_marks_missing_output_on_failure() {
     let progress = TurnExecutionProgress::new();
     progress.record_model_output_received();
-    progress.record_tool_dispatched();
+    progress.record_tool_dispatched(&codex_protocol::ToolName::plain("exec_command"));
     progress.record_tool_completed();
     assert_eq!(
         progress.continuation_safety(),

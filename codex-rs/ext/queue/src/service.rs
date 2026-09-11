@@ -668,20 +668,10 @@ where
                     parent_turn_id: m.parent_turn_id.clone(),
                     root_turn_id: m.root_turn_id.clone(),
                     agent_path: m.agent_path.clone(),
+                    replay_safety: convert_replay_safety(&m.replay_safety),
                 })
                 .collect::<Vec<_>>();
-            let replay_safety = match input.replay_safety {
-                codex_extension_api::SuspendedReplaySafety::Safe {
-                    verified_tool_calls,
-                } => crate::payload::ReplaySafetySummary::Safe {
-                    verified_tool_calls: *verified_tool_calls,
-                },
-                codex_extension_api::SuspendedReplaySafety::AttentionRequired { reason } => {
-                    crate::payload::ReplaySafetySummary::AttentionRequired {
-                        reason: reason.clone(),
-                    }
-                }
-            };
+            let replay_safety = convert_replay_safety(input.replay_safety);
             let manifest = crate::payload::SuspendedTreeRecoveryManifest {
                 root_thread_id: thread_id,
                 root_turn_id: input.turn_id.to_string(),
@@ -699,6 +689,32 @@ where
                 );
             }
         })
+    }
+}
+
+/// Converts an extension API `SuspendedReplaySafety` to the queue
+/// payload's `ReplaySafetySummary`.
+fn convert_replay_safety(
+    safety: &codex_extension_api::SuspendedReplaySafety,
+) -> crate::payload::ReplaySafetySummary {
+    match safety {
+        codex_extension_api::SuspendedReplaySafety::Safe {
+            verified_tool_calls,
+            categories,
+        } => crate::payload::ReplaySafetySummary::Safe {
+            verified_tool_calls: *verified_tool_calls,
+            categories: crate::payload::ReplayEffectCategories {
+                shell_commands: categories.shell_commands,
+                file_edits: categories.file_edits,
+                mcp_calls: categories.mcp_calls,
+                dynamic_tool_calls: categories.dynamic_tool_calls,
+            },
+        },
+        codex_extension_api::SuspendedReplaySafety::AttentionRequired { reason } => {
+            crate::payload::ReplaySafetySummary::AttentionRequired {
+                reason: reason.clone(),
+            }
+        }
     }
 }
 

@@ -253,9 +253,9 @@ pub(super) async fn suspend_tree_and_shutdown(
 ///
 /// `AttentionRequired` is already rejected earlier in the suspension path,
 /// so this helper only classifies the remaining safe states.  The
-/// `verified_tool_calls` count is derived from the progress snapshot: when
-/// all dispatched tools completed without missing output, the dispatch
-/// count is the verified count.
+/// `verified_tool_calls` count and per-category breakdown are derived from
+/// the progress snapshot: when all dispatched tools completed without
+/// missing output, the dispatch counts are the verified counts.
 fn continuation_safety_to_replay_safety(
     snapshot: &TurnExecutionProgressSnapshot,
 ) -> SuspendedReplaySafety {
@@ -264,13 +264,20 @@ fn continuation_safety_to_replay_safety(
             reason: "root turn has missing tool output".to_string(),
         };
     }
-    let verified_tool_calls = if snapshot.tool_completed {
-        snapshot.tool_dispatch_count as usize
+    let categories = if snapshot.tool_completed {
+        codex_extension_api::ReplayEffectCategories {
+            shell_commands: snapshot.completed_categories.shell_commands as usize,
+            file_edits: snapshot.completed_categories.file_edits as usize,
+            mcp_calls: snapshot.completed_categories.mcp_calls as usize,
+            dynamic_tool_calls: snapshot.completed_categories.dynamic_tool_calls as usize,
+        }
     } else {
-        0
+        codex_extension_api::ReplayEffectCategories::default()
     };
+    let verified_tool_calls = categories.total();
     SuspendedReplaySafety::Safe {
         verified_tool_calls,
+        categories,
     }
 }
 
@@ -301,12 +308,15 @@ async fn collect_suspended_members(
             continue;
         };
         // Extract the active turn ID and root turn ID from the member's
-        // active turn context.
-        let (turn_id, root_turn_id, parent_turn_id) = {
+        // active turn context, and derive per-member replay safety from
+        // the member's own execution progress snapshot.
+        let (turn_id, root_turn_id, parent_turn_id, replay_safety) = {
             let active = thread.session.active_turn.lock().await;
             let Some(task) = active.as_ref().and_then(|turn| turn.task.as_ref()) else {
                 continue;
             };
+            let snapshot = task.turn_context.execution_progress.snapshot();
+            let replay_safety = continuation_safety_to_replay_safety(&snapshot);
             (
                 task.turn_context.sub_id.clone(),
                 task.turn_context
@@ -317,6 +327,7 @@ async fn collect_suspended_members(
                     .turn_metadata_state
                     .parent_turn_id()
                     .unwrap_or_default(),
+                replay_safety,
             )
         };
         let parent_thread_id = thread
@@ -336,6 +347,7 @@ async fn collect_suspended_members(
             parent_turn_id,
             root_turn_id,
             agent_path,
+            replay_safety,
         });
     }
     info

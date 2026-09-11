@@ -21,6 +21,7 @@
 //! during tree suspension to populate [`ReplaySafetySummary`] in the
 //! durable recovery manifest.
 
+use crate::payload::ReplayEffectCategories;
 use crate::payload::ReplaySafetySummary;
 
 /// Categories of tool/runtime effects audited for replay safety.
@@ -94,6 +95,7 @@ pub(crate) fn classify_replay_safety(
     if blocking.is_empty() {
         ReplaySafetySummary::Safe {
             verified_tool_calls,
+            categories: ReplayEffectCategories::default(),
         }
     } else {
         let reason = format!(

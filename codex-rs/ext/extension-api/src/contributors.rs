@@ -37,6 +37,7 @@ pub use prompt::PromptFragment;
 pub use prompt::PromptSlot;
 pub use skill_invocation::SkillInvocationInput;
 pub use skill_invocation::SkillInvocationKind;
+pub use thread_lifecycle::ReplayEffectCategories;
 pub use thread_lifecycle::SuspendedMemberInfo;
 pub use thread_lifecycle::SuspendedReplaySafety;
 pub use thread_lifecycle::ThreadIdleCause;

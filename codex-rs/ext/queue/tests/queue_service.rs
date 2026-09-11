@@ -1285,6 +1285,7 @@ async fn scheduler_dispatches_suspended_tree_recovery_no_manager() -> anyhow::Re
         not_before_ms: 0,
         replay_safety: codex_queue_extension::ReplaySafetySummary::Safe {
             verified_tool_calls: 0,
+            categories: codex_queue_extension::ReplayEffectCategories::default(),
         },
     };
     let payload = codex_queue_extension::QueuePayload::suspended_tree_recovery(manifest)?;
@@ -1483,6 +1484,10 @@ async fn recovery_manifest_members_are_parent_first() -> anyhow::Result<()> {
                 parent_turn_id: "root-turn".to_string(),
                 root_turn_id: "root-turn".to_string(),
                 agent_path: "root.child".to_string(),
+                replay_safety: codex_queue_extension::ReplaySafetySummary::Safe {
+                    verified_tool_calls: 0,
+                    categories: codex_queue_extension::ReplayEffectCategories::default(),
+                },
             },
             codex_queue_extension::SuspendedTreeMember {
                 thread_id: grandchild_thread.clone(),
@@ -1491,12 +1496,17 @@ async fn recovery_manifest_members_are_parent_first() -> anyhow::Result<()> {
                 parent_turn_id: "child-turn".to_string(),
                 root_turn_id: "root-turn".to_string(),
                 agent_path: "root.child.grandchild".to_string(),
+                replay_safety: codex_queue_extension::ReplaySafetySummary::Safe {
+                    verified_tool_calls: 0,
+                    categories: codex_queue_extension::ReplayEffectCategories::default(),
+                },
             },
         ],
         coordinator_generation: 1,
         not_before_ms: 0,
         replay_safety: codex_queue_extension::ReplaySafetySummary::Safe {
             verified_tool_calls: 0,
+            categories: codex_queue_extension::ReplayEffectCategories::default(),
         },
     };
 
@@ -1531,6 +1541,7 @@ async fn partial_suspension_rollback_releases_lease() -> anyhow::Result<()> {
         not_before_ms: 0,
         replay_safety: codex_queue_extension::ReplaySafetySummary::Safe {
             verified_tool_calls: 0,
+            categories: codex_queue_extension::ReplayEffectCategories::default(),
         },
     };
     let payload = codex_queue_extension::QueuePayload::suspended_tree_recovery(manifest)?;
@@ -1587,6 +1598,7 @@ async fn on_turn_suspended_enqueues_recovery_manifest() -> anyhow::Result<()> {
     let thread_store = ExtensionData::new(&thread_id_str);
     let replay_safety = codex_extension_api::SuspendedReplaySafety::Safe {
         verified_tool_calls: 3,
+        categories: codex_extension_api::ReplayEffectCategories::default(),
     };
     let input = TurnSuspendedInput {
         thread_id: &thread_id_str,
@@ -1641,6 +1653,7 @@ async fn on_turn_suspended_due_immediately_is_discovered_by_scheduler() -> anyho
     let thread_store = ExtensionData::new(&thread_id_str);
     let replay_safety = codex_extension_api::SuspendedReplaySafety::Safe {
         verified_tool_calls: 0,
+        categories: codex_extension_api::ReplayEffectCategories::default(),
     };
     let input = TurnSuspendedInput {
         thread_id: &thread_id_str,
@@ -1699,9 +1712,24 @@ async fn on_turn_suspended_preserves_members_and_coordinator_generation() -> any
         parent_turn_id: "root-turn-1".to_string(),
         root_turn_id: "root-turn-1".to_string(),
         agent_path: "root.child".to_string(),
+        replay_safety: codex_extension_api::SuspendedReplaySafety::Safe {
+            verified_tool_calls: 1,
+            categories: codex_extension_api::ReplayEffectCategories {
+                shell_commands: 1,
+                file_edits: 0,
+                mcp_calls: 0,
+                dynamic_tool_calls: 0,
+            },
+        },
     };
     let replay_safety = codex_extension_api::SuspendedReplaySafety::Safe {
         verified_tool_calls: 2,
+        categories: codex_extension_api::ReplayEffectCategories {
+            shell_commands: 1,
+            file_edits: 1,
+            mcp_calls: 0,
+            dynamic_tool_calls: 0,
+        },
     };
     let session_store = ExtensionData::new("session");
     let thread_store = ExtensionData::new(&root_thread_id_str);
@@ -1739,10 +1767,30 @@ async fn on_turn_suspended_preserves_members_and_coordinator_generation() -> any
     assert_eq!(manifest.members[0].parent_turn_id, "root-turn-1");
     assert_eq!(manifest.members[0].root_turn_id, "root-turn-1");
     assert_eq!(manifest.members[0].agent_path, "root.child");
+    // Per-member replay safety survives the callback → manifest → SQLite → decode round trip.
+    assert_eq!(
+        manifest.members[0].replay_safety,
+        codex_queue_extension::ReplaySafetySummary::Safe {
+            verified_tool_calls: 1,
+            categories: codex_queue_extension::ReplayEffectCategories {
+                shell_commands: 1,
+                file_edits: 0,
+                mcp_calls: 0,
+                dynamic_tool_calls: 0,
+            },
+        }
+    );
+    // Root replay safety with per-category breakdown survives the round trip.
     assert_eq!(
         manifest.replay_safety,
         codex_queue_extension::ReplaySafetySummary::Safe {
             verified_tool_calls: 2,
+            categories: codex_queue_extension::ReplayEffectCategories {
+                shell_commands: 1,
+                file_edits: 1,
+                mcp_calls: 0,
+                dynamic_tool_calls: 0,
+            },
         }
     );
 

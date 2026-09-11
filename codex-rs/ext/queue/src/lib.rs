@@ -13,6 +13,7 @@ pub use payload::CURRENT_PAYLOAD_VERSION;
 pub use payload::QueueEnvelope;
 pub use payload::QueueJobKind;
 pub use payload::QueuePayload;
+pub use payload::ReplayEffectCategories;
 pub use payload::ReplaySafetySummary;
 pub use payload::SuspendedTreeMember;
 pub use payload::SuspendedTreeRecoveryManifest;
